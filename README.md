@@ -29,7 +29,7 @@ AI 辅助小说拆解与分镜参考写作工具链：把小说原文解析为�
 ```
 NovelyWrite/
 ├── cli.mjs                 # 统一 CLI 入口（显式命令 + 自然语言意图）
-├── config.example.json     # 配置模板（apiKey 留空，用环境变量注入）
+├── config.json             # 本地配置（不入库，见「配置」节创建）
 ├── novelread/              # L1 语料处理（标注 / 聚合 / 校验 / 修复）
 │   ├── specs/              # 标注规范（卷纲 / 大事件 / 章节 / 分镜 / 句子）
 │   └── state/              # 运行时原始文本分章（不提交）
@@ -51,10 +51,29 @@ NovelyWrite/
 
 ### 2. 配置
 
-复制模板并填入 API key（或留空、运行时用环境变量注入）：
+创建 `config.json`（被 `.gitignore` 排除，不入库），按以下结构填写，apiKey 可留空、运行时用环境变量注入：
 
-```bash
-cp config.example.json config.json
+```json
+{
+  "chat": {
+    "baseUrl": "https://api.deepseek.com/v1",
+    "apiKey": "",
+    "model": "deepseek-v4-flash",
+    "temperature": 0.8,
+    "maxTokens": 2000,
+    "timeoutMs": 300000,
+    "maxRetries": 3
+  },
+  "embed": {
+    "baseUrl": "https://api.siliconflow.cn/v1",
+    "apiKey": "",
+    "model": "BAAI/bge-large-zh-v1.5",
+    "dimension": 1024,
+    "batchSize": 32,
+    "timeoutMs": 30000,
+    "maxRetries": 3
+  }
+}
 ```
 
 `config.json` 含两段：
