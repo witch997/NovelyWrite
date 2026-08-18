@@ -1,0 +1,22 @@
+# ===== 敏感配置（含 API key，切勿提交！） =====
+config.json
+config.local.json
+
+# ===== 用户数据 / 运行时产物 =====
+corpus/
+store/
+output/
+novelread/state/
+features/shot-writing/sessions/
+
+# ===== 工具链 / 环境 =====
+.workbuddy/
+node_modules/
+.env
+.env.*
+!.env.example
+
+# ===== 系统杂项 =====
+.DS_Store
+Thumbs.db
+*.log
