@@ -26,14 +26,18 @@
 
 <!-- ===== 三栏主体 ===== -->
 <main class="layout">
-  <!-- 左栏:大纲/章节/会话 -->
+  <!-- 左栏:书本/章节大纲 -->
   <aside class="pane pane-left">
     <div class="pane-header">
       <span>大纲</span>
-      <button class="btn btn-sm" id="btnAddChapter">+ 章</button>
+      <button class="btn btn-sm" id="btnAddChapter" title="当前书新建章节">+ 章</button>
+    </div>
+    <div class="book-bar">
+      <select id="bookSelect" class="book-select" title="选择我的书"></select>
+      <button class="btn btn-sm" id="btnNewBook" title="新建书">+ 书</button>
     </div>
     <div class="pane-body" id="outlineList">
-      <div class="placeholder">暂无章节<br>点击「+ 章」新建</div>
+      <div class="placeholder">先选择或新建一本书<br>再「+ 章」开始写作</div>
     </div>
   </aside>
 

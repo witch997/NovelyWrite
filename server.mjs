@@ -49,7 +49,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs } from "./shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs, createProject } from "./shared/paths.mjs";
 import { loadChatConfig, loadConfigSummary, loadRawConfig } from "./shared/config.mjs";
 import { retrieve } from "./retriever/retriever.mjs";
 import { NovelyError, report } from "./shared/errors.mjs";
@@ -227,6 +227,109 @@ function apiConfigPut(body) {
   return { ok: true, summary: loadConfigSummary() };
 }
 
+/* ================= 书/章节 API（我的作品 mybook 资产区：用户原稿实时持久化） =================
+ * 布局：mybook/<书>/第XXXX章.md（Markdown 原稿；首行 "# 标题" 为可选章节标题约定）
+ * 新建书 = createProject(my) 建 store 骨架 + mkdir mybook/<书>（两处）
+ */
+const BOOK_NAME_RE = /^[\u4e00-\u9fa5A-Za-z0-9_·《》（）()]+$/; // 书名白名单（防路径穿越）
+const MAX_BOOK_NAME = 50;
+
+function bookDir(name) {
+  return path.join(mybookDir, name);
+}
+/** 校验书存在（mybook 资产区），不存在抛 NOT_FOUND */
+function ensureBook(name) {
+  if (!name || !BOOK_NAME_RE.test(name)) throw new NovelyError("ARG_INVALID", { context: { field: "name", value: name } });
+  const dir = bookDir(name);
+  if (!fs.existsSync(dir)) throw new NovelyError("NOT_FOUND", { context: { name, kind: "book" } });
+  return dir;
+}
+/** 扫描书目录章节：第XXXX章.md → [{num,title?,updatedAt}]（按 num 排序） */
+function scanChapters(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const out = [];
+  for (const f of fs.readdirSync(dir)) {
+    const m = f.match(/^第(\d{4})章\.md$/);
+    if (!m) continue;
+    const p = path.join(dir, f);
+    let title = null;
+    try {
+      const first = fs.readFileSync(p, "utf-8").split("\n")[0] ?? "";
+      const tm = first.match(/^#\s+(.+)/);
+      if (tm) title = tm[1].trim();
+    } catch { /* 标题读取失败 → null */ }
+    let updatedAt = null;
+    try { updatedAt = fs.statSync(p).mtime.toISOString(); } catch { /* ignore */ }
+    out.push({ num: Number(m[1]), title, updatedAt });
+  }
+  return out.sort((a, b) => a.num - b.num);
+}
+const chapterFile = (dir, num) => path.join(dir, `第${pad4(num)}章.md`);
+
+/** GET /api/books — 我的书列表（书名 + 章节数 + 最近更新） */
+function apiBooks() {
+  return {
+    books: listProjects(DOMAIN.MY).map((name) => {
+      const chapters = scanChapters(bookDir(name));
+      return { name, chapters: chapters.length, updatedAt: chapters.at(-1)?.updatedAt ?? null };
+    }),
+  };
+}
+
+/** POST /api/books {name} — 新建书（查重 + store 骨架 + mybook 原稿区） */
+function apiCreateBook(body) {
+  const name = (body?.name ?? "").trim();
+  if (!name || name.length > MAX_BOOK_NAME) {
+    throw new NovelyError("ARG_INVALID", { context: { field: "name", value: name, rule: `1-${MAX_BOOK_NAME} 字符` } });
+  }
+  if (!BOOK_NAME_RE.test(name)) {
+    throw new NovelyError("ARG_INVALID", { context: { field: "name", value: name, rule: "仅中文/字母/数字/_·《》（）()" } });
+  }
+  createProject(name, DOMAIN.MY); // 查重(两域同名禁止) + 建 store/myproject/<书>project 骨架
+  fs.mkdirSync(bookDir(name), { recursive: true });
+  return { ok: true, book: name };
+}
+
+/** GET /api/books/:name — 书详情（章节列表） */
+function apiBookDetail(name) {
+  const dir = ensureBook(name);
+  return { name, chapters: scanChapters(dir) };
+}
+
+/** POST /api/books/:name/chapters {title?} — 新建章节（自动编号 = 现有最大 + 1） */
+function apiCreateChapter(name, body) {
+  const dir = ensureBook(name);
+  const chapters = scanChapters(dir);
+  const num = chapters.length ? chapters.at(-1).num + 1 : 1;
+  const title = (body?.title ?? "").trim().slice(0, 60);
+  const content = title ? `# ${title}\n\n` : "";
+  fs.writeFileSync(chapterFile(dir, num), content, "utf-8");
+  return { ok: true, num, title: title || `第${num}章` };
+}
+
+/** GET /api/books/:name/chapters/:n — 读章节内容 */
+function apiGetChapter(name, num) {
+  const dir = ensureBook(name);
+  if (!Number.isInteger(num) || num < 1 || num > 9999) throw new NovelyError("ARG_INVALID", { context: { field: "num", value: num } });
+  const file = chapterFile(dir, num);
+  if (!fs.existsSync(file)) throw new NovelyError("NOT_FOUND", { context: { name, num, kind: "chapter" } });
+  const content = fs.readFileSync(file, "utf-8");
+  const first = content.split("\n")[0] ?? "";
+  const tm = first.match(/^#\s+(.+)/);
+  return { name, num, title: tm ? tm[1].trim() : null, content };
+}
+
+/** PUT /api/books/:name/chapters/:n {content} — 保存章节内容 */
+function apiSaveChapter(name, num, body) {
+  const dir = ensureBook(name);
+  if (!Number.isInteger(num) || num < 1 || num > 9999) throw new NovelyError("ARG_INVALID", { context: { field: "num", value: num } });
+  const file = chapterFile(dir, num);
+  if (!fs.existsSync(file)) throw new NovelyError("NOT_FOUND", { context: { name, num, kind: "chapter" } });
+  if (typeof body?.content !== "string") throw new NovelyError("ARG_REQUIRED", { context: { field: "content" } });
+  fs.writeFileSync(file, body.content, "utf-8");
+  return { ok: true, name, num, savedAt: new Date().toISOString() };
+}
+
 /** 可打开的目录清单（安全白名单：只能开这些目录，防任意路径） */
 const OPENABLE_DIRS = {
   data: DATA_ROOT,           // 数据根
@@ -302,6 +405,12 @@ function apiSessionDetail(id) {
 /* ================= 路由 ================= */
 const ROUTES = [
   { m: "GET", p: /^\/api\/projects$/, h: () => apiProjects() },
+  { m: "GET", p: /^\/api\/books$/, h: () => apiBooks() },
+  { m: "POST", p: /^\/api\/books$/, h: (_m, b) => apiCreateBook(b) },
+  { m: "GET", p: /^\/api\/books\/([^/]+)$/, h: (m) => apiBookDetail(decodeURIComponent(m[1])) },
+  { m: "POST", p: /^\/api\/books\/([^/]+)\/chapters$/, h: (m, b) => apiCreateChapter(decodeURIComponent(m[1]), b) },
+  { m: "GET", p: /^\/api\/books\/([^/]+)\/chapters\/(\d+)$/, h: (m) => apiGetChapter(decodeURIComponent(m[1]), Number(m[2])) },
+  { m: "PUT", p: /^\/api\/books\/([^/]+)\/chapters\/(\d+)$/, h: (m, b) => apiSaveChapter(decodeURIComponent(m[1]), Number(m[2]), b) },
   { m: "GET", p: /^\/api\/projects\/([^/]+)$/, h: (m) => apiProjectDetail(decodeURIComponent(m[1])) },
   { m: "GET", p: /^\/api\/projects\/([^/]+)\/chapters\/(\d+)$/, h: (m) => apiChapter(decodeURIComponent(m[1]), Number(m[2])) },
   { m: "GET", p: /^\/api\/projects\/([^/]+)\/events$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "大事件", "event.json")) ?? { events: [] } },

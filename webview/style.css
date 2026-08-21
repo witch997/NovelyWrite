@@ -150,6 +150,16 @@ body {
 .outline-item .ch-num { color: var(--label-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .outline-item.active .ch-num { color: var(--brand); }
 
+/* 左栏书选择条 */
+.book-bar { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); align-items: center; }
+.book-select {
+  flex: 1; min-width: 0;
+  background: var(--bg-base); color: var(--label-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 5px 8px; font-size: 12px; font-family: inherit;
+}
+.book-select:focus { outline: none; border-color: var(--brand); }
+
 /* 中栏编辑器 */
 .editor-wrap { padding: 0; background: var(--bg-base); }
 #vditor { height: 100%; }

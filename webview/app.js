@@ -19,11 +19,13 @@
 
   /* ================= 全局状态 ================= */
   const state = {
-    chapters: [],          // 大纲列表 [{num, title}]
-    currentChapter: null,  // 当前章号
-    sessionId: null,       // 当前写作会话
-    shots: [],             // 当前分镜序列
-    taskPolling: null,     // 轮询定时器
+    books: [],           // 我的书列表 [{name, chapters, updatedAt}]
+    currentBook: null,   // 当前书
+    chapters: [],        // 当前书章节列表 [{num, title, updatedAt}]
+    currentChapter: null, // 当前章号
+    sessionId: null,     // 当前写作会话
+    shots: [],           // 当前分镜序列
+    taskPolling: null,   // 轮询定时器
     busy: false,
   };
 
@@ -73,47 +75,146 @@
     });
   }
 
-  /* ================= 自动保存(骨架:落 localStorage;mybook 落地后改 server) ================= */
+  /* ================= 自动保存（server 持久化：PUT /api/books/:name/chapters/:n） ================= */
   let saveTimer = null;
   function autoSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => {
-      if (!state.currentChapter || !vditor) return;
-      const text = vditor.getValue();
-      localStorage.setItem(`nw-ch-${pad4(state.currentChapter)}`, text);
-      taskStatus.textContent = "已自动保存";
-    }, 800);
+    saveTimer = setTimeout(() => saveChapter(true), 800);
+  }
+
+  /** 保存当前章节到 mybook 资产区（静默模式不打扰 UI） */
+  async function saveChapter(silent) {
+    if (!state.currentBook || !state.currentChapter || !vditor) return;
+    const content = vditor.getValue();
+    try {
+      await api(`/api/books/${encodeURIComponent(state.currentBook)}/chapters/${state.currentChapter}`, {
+        method: "PUT",
+        body: JSON.stringify({ content }),
+      });
+      if (!silent) taskStatus.textContent = "✅ 已保存到 mybook";
+    } catch (e) {
+      if (!silent) taskStatus.textContent = `保存失败: ${e.message}`;
+    }
+  }
+
+  /* ================= 书（我的作品 mybook 资产区） ================= */
+  async function loadBooks() {
+    try {
+      const d = await api("/api/books");
+      state.books = d.books || [];
+      const sel = $("bookSelect");
+      sel.innerHTML = "";
+      if (!state.books.length) {
+        sel.innerHTML = '<option value="">(无书,先新建)</option>';
+        state.currentBook = null;
+        renderOutline();
+        return;
+      }
+      for (const b of state.books) {
+        const opt = document.createElement("option");
+        opt.value = b.name;
+        opt.textContent = `${b.name}（${b.chapters}章）`;
+        sel.appendChild(opt);
+      }
+      // 保持当前选择（或默认第一本）
+      if (state.currentBook && state.books.some((b) => b.name === state.currentBook)) {
+        sel.value = state.currentBook;
+      } else {
+        state.currentBook = state.books[0].name;
+        sel.value = state.currentBook;
+      }
+      await loadBookDetail(state.currentBook);
+    } catch (e) {
+      $("outlineList").innerHTML = `<div class="placeholder">书加载失败: ${e.message}</div>`;
+    }
+  }
+
+  /** 加载某书章节列表 */
+  async function loadBookDetail(name) {
+    state.currentBook = name;
+    state.currentChapter = null;
+    const d = await api(`/api/books/${encodeURIComponent(name)}`);
+    state.chapters = d.chapters || [];
+    renderOutline();
+    if (state.chapters.length) {
+      openChapter(state.chapters[0].num);
+    } else if (vditor) {
+      vditor.setValue("");
+      $("currentChapterTitle").textContent = `${name} · 未命名`;
+    }
+  }
+
+  /** 新建书（prompt 书名 → POST /api/books → 刷新并选中） */
+  async function newBook() {
+    const name = prompt("新建书（书名，仅中文/字母/数字等）:");
+    if (!name) return;
+    try {
+      await api("/api/books", { method: "POST", body: JSON.stringify({ name: name.trim() }) });
+      await loadBooks();
+      $("bookSelect").value = name.trim();
+      state.currentBook = name.trim();
+      await loadBookDetail(name.trim());
+      taskStatus.textContent = `✅ 已建书: ${name.trim()}`;
+    } catch (e) {
+      taskStatus.textContent = `建书失败: ${e.message}`;
+    }
+  }
+
+  /** 书选择变化 */
+  async function onBookChange() {
+    const name = $("bookSelect").value;
+    if (!name) { state.currentBook = null; renderOutline(); return; }
+    await loadBookDetail(name);
   }
 
   /* ================= 大纲 ================= */
   function renderOutline() {
-    outlineList.innerHTML = "";
+    const list = outlineList;
+    list.innerHTML = "";
+    if (!state.currentBook) {
+      list.innerHTML = '<div class="placeholder">先选择或新建一本书<br>再「+ 章」开始写作</div>';
+      return;
+    }
     if (!state.chapters.length) {
-      outlineList.innerHTML = '<div class="placeholder">暂无章节<br>点击「+ 章」新建</div>';
+      list.innerHTML = '<div class="placeholder">暂无章节<br>点击「+ 章」新建</div>';
       return;
     }
     for (const c of state.chapters) {
       const item = document.createElement("div");
       item.className = "outline-item" + (c.num === state.currentChapter ? " active" : "");
-      item.innerHTML = `<span>${c.title || "未命名"}</span><span class="ch-num">${pad4(c.num)}</span>`;
+      item.innerHTML = `<span>${escapeHtml(c.title || `第${c.num}章`)}</span><span class="ch-num">${pad4(c.num)}</span>`;
       item.onclick = () => openChapter(c.num);
-      outlineList.appendChild(item);
+      list.appendChild(item);
     }
   }
 
-  function addChapter() {
-    const num = state.chapters.length + 1;
-    state.chapters.push({ num, title: `第${num}章` });
-    renderOutline();
-    openChapter(num);
+  /** 新建章节（当前书） */
+  async function addChapter() {
+    if (!state.currentBook) { taskStatus.textContent = "请先选择或新建一本书"; return; }
+    try {
+      const r = await api(`/api/books/${encodeURIComponent(state.currentBook)}/chapters`, { method: "POST", body: JSON.stringify({}) });
+      taskStatus.textContent = `✅ 已新建第${r.num}章`;
+      await loadBookDetail(state.currentBook); // 刷新列表（自动打开第一章；若已打开则保持）
+      // 保持当前打开的章不变；新章通常是最新一章
+      if (!state.currentChapter) openChapter(r.num);
+    } catch (e) {
+      taskStatus.textContent = `新建章节失败: ${e.message}`;
+    }
   }
 
-  function openChapter(num) {
+  /** 打开章节（读 mybook 内容 → 编辑器） */
+  async function openChapter(num) {
+    if (!state.currentBook) return;
     state.currentChapter = num;
     renderOutline();
-    const saved = localStorage.getItem(`nw-ch-${pad4(num)}`) || "";
-    if (vditor) vditor.setValue(saved);
-    $("currentChapterTitle").textContent = `第${pad4(num)}章`;
+    try {
+      const d = await api(`/api/books/${encodeURIComponent(state.currentBook)}/chapters/${num}`);
+      if (vditor) vditor.setValue(d.content || "");
+      $("currentChapterTitle").textContent = `${state.currentBook} · ${d.title || `第${pad4(num)}章`}`;
+    } catch (e) {
+      $("currentChapterTitle").textContent = `第${pad4(num)}章`;
+      taskStatus.textContent = `读取章节失败: ${e.message}`;
+    }
   }
 
   /* ================= 配置状态 ================= */
@@ -349,8 +450,11 @@
   /* ================= 事件绑定 ================= */
   function bind() {
     $("btnAddChapter").onclick = addChapter;
-    $("btnNew").onclick = () => { state.chapters = []; renderOutline(); if (vditor) vditor.setValue(""); };
-    $("btnSave").onclick = () => { autoSave(); taskStatus.textContent = "已保存(本地)"; };
+    $("btnNewBook").onclick = newBook;
+    $("bookSelect").onchange = onBookChange;
+    // 顶栏「新建」= 清空编辑器（不落盘）；「保存」= 保存到 mybook 资产区
+    $("btnNew").onclick = () => { if (vditor) vditor.setValue(""); };
+    $("btnSave").onclick = () => saveChapter(false);
     $("btnGenerate").onclick = genShots;
     $("btnGenShots").onclick = genShots;
     $("taskbarToggle").onclick = () => document.getElementById("taskbar").classList.toggle("open");
@@ -382,8 +486,7 @@
     initEditor();
     loadConfig();
     loadRefPool(); // 参考书池(跨书参考源选择)
-    // 骨架演示:默认加一章
-    addChapter();
+    loadBooks();   // 我的书(mybook 资产区)
     taskStatus.textContent = "就绪";
   }
 
