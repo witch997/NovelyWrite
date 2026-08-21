@@ -45,6 +45,8 @@ async function chatStreamNoThinking(messages, opts = {}) {
     temperature: opts.temperature ?? chatCfg.temperature ?? 0.8,
     stream: true,
     thinking: { type: "disabled" },
+    // 流式末尾 chunk 附带 usage（token 消耗统计用；不影响内容流）
+    stream_options: { include_usage: true },
   };
   if (opts.maxTokens !== null) body.max_tokens = opts.maxTokens ?? chatCfg.maxTokens ?? 65536;
 
@@ -56,6 +58,7 @@ async function chatStreamNoThinking(messages, opts = {}) {
     if (opts.timeoutMs !== null) {
       timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? chatCfg.timeoutMs ?? 300000);
     }
+    let usage = null; // 本次调用 token 消耗（末 chunk 携带）
     try {
       const res = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
@@ -84,6 +87,7 @@ async function chatStreamNoThinking(messages, opts = {}) {
           if (data === "[DONE]") continue;
           try {
             const chunk = JSON.parse(data);
+            if (chunk.usage) usage = chunk.usage; // 末 chunk（choices 空）带 usage
             const delta = chunk.choices?.[0]?.delta?.content;
             if (delta) {
               fullContent += delta;
@@ -99,6 +103,7 @@ async function chatStreamNoThinking(messages, opts = {}) {
           if (data !== "[DONE]") {
             try {
               const chunk = JSON.parse(data);
+              if (chunk.usage) usage = chunk.usage;
               const delta = chunk.choices?.[0]?.delta?.content;
               if (delta) fullContent += delta;
             } catch { /* ignore */ }
@@ -108,7 +113,7 @@ async function chatStreamNoThinking(messages, opts = {}) {
       if (!fullContent.trim()) {
         throw new Error("LLM 流式返回空内容（可能思考模式未禁用或 API 异常）");
       }
-      return fullContent;
+      return { content: fullContent, usage };
     } catch (err) {
       lastError = err;
       const retryable = err.name === "AbortError" || /429|5\d\d/.test(err.message);
@@ -261,7 +266,10 @@ function gateShots(shotJson, sentJson) {
   if (allIds.length !== sents.length) issues.push(`分镜覆盖 ${allIds.length} 句，应=${sents.length}`);
   if (allIds.some((id, i) => id !== `S${i + 1}`)) issues.push("分镜 sentenceIds 不连续");
   if (sh.some((x) => !SHOT_TYPES.includes(x.type))) issues.push("type 枚举非法");
-  if (sh.some((x) => !(x.funcs ?? []).length || x.funcs.some((f) => !SHOT_FUNCS.includes(f)))) issues.push("funcs 枚举非法或为空");
+  const badFuncs = sh
+    .filter((x) => !(x.funcs ?? []).length || x.funcs.some((f) => !SHOT_FUNCS.includes(f)))
+    .map((x) => `镜${x.id ?? "?"} funcs=[${(x.funcs ?? []).join(",")}]`);
+  if (badFuncs.length) issues.push(`funcs 枚举非法或为空: ${badFuncs.join("; ")}`);
   return { ok: issues.length === 0, issues };
 }
 
@@ -286,6 +294,10 @@ async function main() {
   if (!list.length) throw new Error(`章节清单为空: ${LIST_PATH ?? "未找到 <语料名>-章节清单.csv 或 章节清单.csv"}`);
   console.log(`[host] 语料 ${corpusName}，共 ${list.length} 章，清单: ${LIST_PATH}`);
 
+  // 消耗统计（LLM 调用次数 / token / 耗时）
+  const COST = { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, elapsedMs: 0 };
+  const startedAt = new Date().toISOString();
+
   const todo = doAll
     ? list
     : list.filter((c) => chapters.includes(c.number));
@@ -301,14 +313,22 @@ async function main() {
   async function callLlm(userMsg, ch, skill) {
     console.log("[host] 调用 LLM（streaming + thinking 禁用，max_tokens=65536 / 无超时）...");
     const t0 = Date.now();
-    const raw = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: null });
+    const res = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: null });
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
-    console.log(`[host] LLM 返回 ${raw.length} 字符（耗时 ${secs}s）`);
+    console.log(`[host] LLM 返回 ${res.content.length} 字符（耗时 ${secs}s）`);
+    // 消耗统计累计（token 来自流式末 chunk usage；未带 usage 时该项为 0）
+    COST.calls++;
+    COST.elapsedMs += Date.now() - t0;
+    if (res.usage) {
+      COST.promptTokens += res.usage.prompt_tokens ?? 0;
+      COST.completionTokens += res.usage.completion_tokens ?? 0;
+      COST.totalTokens += res.usage.total_tokens ?? 0;
+    }
     try {
-      return { payload: parsePayload(raw), raw };
+      return { payload: parsePayload(res.content), raw: res.content };
     } catch (err) {
       console.error("[host] 解析失败，原始输出已存盘供检查:", err.message);
-      fs.writeFileSync(path.join(CODE_ROOT, "novelread", "state", `raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}.txt`), raw, "utf-8");
+      fs.writeFileSync(path.join(CODE_ROOT, "novelread", "state", `raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}.txt`), res.content, "utf-8");
       return null;
     }
   }
@@ -360,9 +380,11 @@ async function main() {
       chapterIssues.push(`第${ch.number}章 往返1 句子层校验失败: ${gA.issues.join("; ")}`);
       continue;
     }
-    fs.mkdirSync(path.dirname(path.join(PROJECT_DIR, sentKey)), { recursive: true });
-    fs.writeFileSync(path.join(PROJECT_DIR, sentKey), sentData, "utf-8");
-    console.log(`  [写] ${sentKey}（${sentData.length} 字符）→ 句子层冻结（唯一权威源）`);
+    // 文件名规范化：宿主决定标准路径（第XXXX章.json 4位零填充），不信任 LLM 输出的键
+    const sentPath = `句子标注/json/第${String(ch.number).padStart(4, "0")}章.json`;
+    fs.mkdirSync(path.dirname(path.join(PROJECT_DIR, sentPath)), { recursive: true });
+    fs.writeFileSync(path.join(PROJECT_DIR, sentPath), sentData, "utf-8");
+    console.log(`  [写] ${sentPath}（${sentData.length} 字符）→ 句子层冻结（唯一权威源）`);
 
     /* ===== 往返2：分镜 + 章节（硬闸门 B） ===== */
     console.log("\n---------- 往返2：分镜层 + 章节层 ----------");
@@ -404,14 +426,22 @@ async function main() {
     const gB = [...gateShots(shotJson, sentJson).issues, ...gateChapter(chJson).issues];
     if (gB.length) {
       console.error(`[硬闸门B✗] ${gB.join("; ")} → 本章跳过（句子已落盘）`);
+      // 留档原始输出供排查（funcs/结构为何不过闸）
+      try {
+        fs.writeFileSync(path.join(CODE_ROOT, "novelread", "state", `raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}-round2.txt`), r2.raw, "utf-8");
+        console.log(`  [留档] raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}-round2.txt`);
+      } catch { /* 留档失败不阻塞 */ }
       chapterIssues.push(`第${ch.number}章 往返2 校验失败: ${gB.join("; ")}`);
       continue;
     }
-    fs.mkdirSync(path.dirname(path.join(PROJECT_DIR, shotKey)), { recursive: true });
-    fs.mkdirSync(path.dirname(path.join(PROJECT_DIR, chKey)), { recursive: true });
-    fs.writeFileSync(path.join(PROJECT_DIR, shotKey), shotData, "utf-8");
-    fs.writeFileSync(path.join(PROJECT_DIR, chKey), chData, "utf-8");
-    console.log(`  [写] ${shotKey} + ${chKey}`);
+    // 文件名规范化：宿主决定标准路径（第XXXX章.json 4位零填充），不信任 LLM 输出的键
+    const shotPath = `分镜标注/json/第${String(ch.number).padStart(4, "0")}章.json`;
+    const chPath = `章节/第${String(ch.number).padStart(4, "0")}章.json`;
+    fs.mkdirSync(path.dirname(path.join(PROJECT_DIR, shotPath)), { recursive: true });
+    fs.mkdirSync(path.dirname(path.join(PROJECT_DIR, chPath)), { recursive: true });
+    fs.writeFileSync(path.join(PROJECT_DIR, shotPath), shotData, "utf-8");
+    fs.writeFileSync(path.join(PROJECT_DIR, chPath), chData, "utf-8");
+    console.log(`  [写] ${shotPath} + ${chPath}`);
 
     // 派生字段（shotId/range/stats/suspense——脚本生成）
     const der = deriveChapter(PROJECT_DIR, ch.number);
@@ -445,11 +475,36 @@ async function main() {
     console.log("\n✅ 章级检测全部通过（所有章 4 文件齐全 + 语法 + 契约）");
   }
 
+  // 消耗汇总（时间 / token / 次数），写入 output/ 供分析
+  const finishedAt = new Date().toISOString();
+  const costReport = {
+    corpus: corpusName,
+    domain,
+    chaptersRequested: todo.map((c) => c.number),
+    startedAt,
+    finishedAt,
+    elapsedSec: Math.round(COST.elapsedMs / 1000),
+    llmCalls: COST.calls,
+    promptTokens: COST.promptTokens,
+    completionTokens: COST.completionTokens,
+    totalTokens: COST.totalTokens,
+    model: chatCfg.model,
+  };
+  console.log(`\n[消耗] LLM ${COST.calls} 次 / 输入 ${COST.promptTokens} / 输出 ${COST.completionTokens} / 合计 ${COST.totalTokens} tokens / 耗时 ${(COST.elapsedMs / 1000).toFixed(1)}s`);
+  try {
+    fs.mkdirSync(path.join(CODE_ROOT, "output"), { recursive: true });
+    const costFile = path.join(CODE_ROOT, "output", `标注消耗-${corpusName}.json`);
+    fs.writeFileSync(costFile, JSON.stringify(costReport, null, 2), "utf-8");
+    console.log(`[消耗] 已写入 ${costFile}`);
+  } catch (err) {
+    console.log(`[消耗] 写入报告失败: ${err.message}`);
+  }
+
   // 整批完成后统一触发向量增量构建（embed 未就绪则跳过）
   console.log("\n[host] 触发向量增量构建...");
   const vresult = await buildVectors({ projects: [corpusName] });
   if (vresult?.ok) {
-    console.log(`[host] 向量构建完成：${vresult.index.stats.totalShots} 分镜 / ${vresult.index.stats.totalChapters} 章`);
+    console.log(`[host] 向量构建完成：${vresult.stats?.totalShots ?? 0} 分镜 / ${vresult.stats?.totalChapters ?? 0} 章`);
   } else {
     console.log(`[host] 向量构建跳过：${vresult?.reason ?? "未知原因"}（${vresult?.guidance ?? ""}）`);
   }
