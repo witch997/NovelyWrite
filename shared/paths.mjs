@@ -135,13 +135,19 @@ export function createProject(project, domain) {
   return target;
 }
 
-/** 运行时：确保数据根目录存在（corpus/store 两域/mybook） */
+/**
+ * 运行时：确保数据目录骨架存在（corpus / store 两域 / mybook / output）。
+ * 供 CLI / server 入口在启动时调用——新安装（fork/克隆）后首次运行即建好目录，
+ * 避免"读取不到 store 等文件夹"；也保证 open-folder 等按路径操作可用。
+ */
 export function ensureDataDirs() {
   fs.mkdirSync(corpusDir, { recursive: true });
   fs.mkdirSync(storeDir, { recursive: true });
   fs.mkdirSync(myprojectDir, { recursive: true });
   fs.mkdirSync(exprojectDir, { recursive: true });
   fs.mkdirSync(mybookDir, { recursive: true });
+  // output 是代码根下的成稿/报告目录（与 DATA_ROOT 解耦，兼容默认布局）
+  fs.mkdirSync(path.join(CODE_ROOT, "output"), { recursive: true });
 }
 
 /** 调试：打印路径 */

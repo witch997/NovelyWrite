@@ -40,7 +40,6 @@ NovelyWrite/
 ├── features/               # L4 功能层
 │   └── shot-writing/       # 分镜参考写作（preprocess / recall / writedraft）
 ├── shared/                 # 公共模块（路径 / 配置 / LLM / embedding / 错误 / 任务）
-├── scripts/                # 迁移脚本（域化）
 ├── corpus/                 # 用户语料（自备，不提交）
 ├── store/                  # 标注数据 / 派生索引（myproject / exproject，不提交）
 ├── mybook/                 # 用户原稿（资产区，不提交）

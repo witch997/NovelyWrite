@@ -24,7 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { CODE_ROOT, DATA_ROOT, corpusDir, storeDir, myprojectDir, exprojectDir, projectRoot, listProjects, domainOf, DOMAIN, createProject } from "./shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, corpusDir, storeDir, myprojectDir, exprojectDir, projectRoot, listProjects, domainOf, DOMAIN, createProject, ensureDataDirs } from "./shared/paths.mjs";
 import { report } from "./shared/errors.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -397,6 +397,8 @@ function dispatch(task, args) {
 /* ================= main ================= */
 
 function main() {
+  // 首启建目录骨架（corpus/store 两域/mybook/output）——新安装即可用，避免缺目录问题
+  ensureDataDirs();
   const argv = process.argv.slice(2);
   if (!argv.length) { printUsage(); process.exit(1); }
 

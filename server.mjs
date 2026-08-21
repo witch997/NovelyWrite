@@ -49,7 +49,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, projectRoot, listProjects, domainOf, DOMAIN, configPath } from "./shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs } from "./shared/paths.mjs";
 import { loadChatConfig, loadConfigSummary, loadRawConfig } from "./shared/config.mjs";
 import { retrieve } from "./retriever/retriever.mjs";
 import { NovelyError, report } from "./shared/errors.mjs";
@@ -508,6 +508,9 @@ const server = http.createServer(async (req, res) => {
 
   json(res, 404, { ok: false, error: { code: "NOT_FOUND", message: `无此接口: ${req.method} ${pathname}` } });
 });
+
+// 首启建目录骨架（corpus/store 两域/mybook/output）——新安装即可用，open-folder 等按路径操作不报缺目录
+ensureDataDirs();
 
 server.listen(port, host, () => {
   // 动态端口：--port=0 时由系统分配，此处取真实端口（必然空闲，杜绝端口冲突）
