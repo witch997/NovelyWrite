@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT, storeDir } from "../../shared/paths.mjs";
+import { CODE_ROOT, storeDir, projectRoot } from "../../shared/paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sessionsDir = path.join(__dirname, "sessions");
@@ -50,13 +50,16 @@ console.log(`[recall] 会话 ${sessionId} | 分镜需求 ${shots.length} 镜 | �
 const { pathToFileURL } = await import("node:url");
 const { retrieve } = await import(pathToFileURL(path.join(CODE_ROOT, "retriever", "retriever.mjs")).href);
 
-/** 回源：按分镜所属 project 定位句子文件（跨书回源必须用 hit 自带的 project） */
+/** 回源：按分镜所属 project 定位句子文件（跨书回源必须用 hit 自带的 project；域感知） */
 function resolveText(shot) {
   try {
     const proj = shot.project; // retriever hit.shot 带 project 字段（跨书各镜来源不同）
     if (!proj) return null;
     const ch = String(shot.chapter).padStart(4, "0");
-    const sentFile = path.join(storeDir, `${proj}project`, "句子标注", "json", `第${ch}章.json`);
+    let sentFile;
+    try {
+      sentFile = path.join(projectRoot(proj), "句子标注", "json", `第${ch}章.json`);
+    } catch { return null; } // 项目不存在（两域均无）
     if (!fs.existsSync(sentFile)) return null;
     const sents = JSON.parse(fs.readFileSync(sentFile, "utf-8")).sentences ?? [];
     const byId = Object.fromEntries(sents.map((s) => [s.id, s.text]));

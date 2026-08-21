@@ -37,13 +37,13 @@ const input = argVal("input");
 const sessionName = argVal("session");
 if (!input) { console.error("用法: node features/shot-writing/preprocess.mjs --input \"<用户输入>\""); process.exit(2); }
 
-/* ---------- LLM 客户端（thinking 禁用，与 host 一致） ---------- */
-const chatCfg = loadChatConfig();
+/* ---------- LLM 客户端（thinking 禁用，与 host 一致；模型/温度走模块作用域 config） ---------- */
+const chatCfg = loadChatConfig("shot-writing", __dirname); // 根 config.features["shot-writing"] 覆盖全局 + 功能目录 config.json 兼容
 const baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
 
 async function chatStream(messages, maxTokens = 65536) {
   const body = {
-    model: chatCfg.model, messages, temperature: 0.6,
+    model: chatCfg.model, messages, temperature: chatCfg.temperature ?? 0.6,
     stream: true, thinking: { type: "disabled" }, max_tokens: maxTokens,
   };
   const res = await fetch(`${baseUrl}/chat/completions`, {
@@ -98,6 +98,15 @@ function ts() {
 async function main() {
   console.log(`[preprocess] 用户输入（${input.length} 字符）: ${input.slice(0, 60)}${input.length > 60 ? "…" : ""}`);
 
+  // 检测用户是否已自带内容分块逻辑：
+  //   ① 空行分隔（段落间有 ≥2 个连续换行）
+  //   ② 显式分隔标记（--- / ### / 【】 / 数字编号如 "1."）
+  // 有分块 → 按用户分块切分（每块一镜）；无分块 → LLM 按叙事动作自由切
+  const hasBlankLineBlocks = /\n\s*\n/.test(input);
+  const hasExplicitMarkers = /(?:^|\n)\s*(?:---|###|【|\[\d+\]|\d+[\.、])/m.test(input);
+  const userBlocked = hasBlankLineBlocks || hasExplicitMarkers;
+  console.log(`[preprocess] 用户分块检测: ${userBlocked ? "有（按用户分块切分）" : "无（LLM 自由切分）"}（空行块=${hasBlankLineBlocks}，显式标记=${hasExplicitMarkers}）`);
+
   // LLM：概括 + 分镜序列
   const userMsg = [
     "## 任务：把用户输入改写为一组尽可能详细的结构化分镜序列",
@@ -105,17 +114,27 @@ async function main() {
     input,
     "",
     "## 要求",
-    "1. 将输入切分为有序分镜序列（宁过切勿合并，每镜一个叙事动作）",
-    "2. 每镜字段：type（六型）/ funcs（十种，1-3 个）/ label（2-6字）/ content（本镜内容）",
-    "3. **content 必须尽可能从用户输入切出**（忠实于原意/原文）；仅当输入过于简略无法支撑分镜时，才由你补充衔接与细节（补充应最少化）",
-    "4. 额外给出 summary：对用户输入主题的 2-6 字概括（用于会话命名）",
+    ...(userBlocked
+      ? [
+          "1. **用户输入已按内容分块**（空行/标记分隔的段落即一个完整分块）。",
+          "2. 严格按用户的分块切分：每个分块 = 一个分镜，分块内部不再细分（一个分块一个分镜）。",
+          "3. 每镜字段：type（六型）/ funcs（十种，1-3 个）/ label（2-6字）/ content（本镜内容，完整保留该分块原文）",
+          "4. content 必须【逐字保留】对应分块的原文内容，不增删不改写。",
+          "5. 额外给出 summary：对用户输入主题的 2-6 字概括（用于会话命名）",
+        ]
+      : [
+          "1. 将输入切分为有序分镜序列（宁过切勿合并，每镜一个叙事动作）",
+          "2. 每镜字段：type（六型）/ funcs（十种，1-3 个）/ label（2-6字）/ content（本镜内容）",
+          "3. **content 必须尽可能从用户输入切出**（忠实于原意/原文）；仅当输入过于简略无法支撑分镜时，才由你补充衔接与细节（补充应最少化）",
+          "4. 额外给出 summary：对用户输入主题的 2-6 字概括（用于会话命名）",
+        ]),
     "",
     "## 合法枚举",
     "type: 信息/对话/心理/动作/事件/环境",
     "funcs: 塑造人物/引入世界观/设置动机/推进/铺垫/反转/爆发/转场/收束分镜/悬念",
     "",
     "## 输出格式",
-    '{"summary": "<2-6字概括>", "shots": [{"seq":1,"type":"...","funcs":[...],"label":"...","content":"..."}, ...]}',
+    '{"summary": "<7字以下概括>", "shots": [{"seq":1,"type":"...","funcs":[...],"label":"...","content":"..."}, ...]}',
     "只输出这个 JSON，不要任何其他内容。",
   ].join("\n");
 
