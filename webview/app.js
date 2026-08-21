@@ -398,7 +398,7 @@
     }
   }
 
-  /** 成稿直显：把最终 final 文本完整传入 AI 成稿窗口 */
+  /** 成稿直显：把最终 final 文本完整传入 AI 成稿窗口（顶端默认在栏顶端） */
   async function showFinalDraft() {
     try {
       const s = await api(`/api/sessions/${state.sessionId}`);
@@ -408,6 +408,9 @@
       aiResult.innerHTML = `
         <div class="draft-title">📄 AI 成稿 · ${escapeHtml(draftEntry[0])}</div>
         <div class="draft-text">${escapeHtml(text)}</div>`;
+      // 结果顶端默认在本栏顶端（不滚动即看到开头）
+      const sec = document.getElementById("aiResultSec");
+      if (sec) sec.scrollTop = 0;
     } catch (e) {
       setAiStatus(`读取成稿失败: ${e.message}`);
     }
@@ -473,11 +476,11 @@
         const panel = document.getElementById("aiPanel");
         const move = (ev) => {
           let h = startH + (ev.clientY - startY);
-          // 上限：面板高度 − 其余区块最小占用（参考书区≈130 / 结果区 90 + 分隔条）
+          // 上限 = 面板高度 − 其他区块【实时实际高度】和 − 分隔条（精确防覆盖/挤出）
           const others = [...panel.querySelectorAll(".ai-sec")].filter((el) => el !== target);
-          const minOthers = others.reduce((a, el) => a + (el.id === "aiResultSec" ? 90 : 130), 0);
+          const othersH = others.reduce((a, el) => a + el.getBoundingClientRect().height, 0);
           const splitH = panel.querySelectorAll(".splitter-h").length * 5;
-          const maxH = panel.getBoundingClientRect().height - minOthers - splitH;
+          const maxH = panel.getBoundingClientRect().height - othersH - splitH;
           h = Math.min(h, maxH);
           target.style.height = Math.max(minH, h) + "px";
         };
