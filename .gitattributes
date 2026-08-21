@@ -1,0 +1,10 @@
+# 统一换行符为 LF（避免 Windows 检出转 CRLF 的噪音警告）
+* text=auto eol=lf
+
+# 二进制文件不转换
+*.exe binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
