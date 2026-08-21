@@ -34,8 +34,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
  * （finish_reason=length，reasoning_tokens=65534，content 为空）。
  * 需要传 thinking:{type:"disabled"} 禁用思考，直接输出正文。
  * 配置来源：数据根 config.json 的 chat 段（shared/config.mjs loadChatConfig，NOVELYWRITE_CHAT_API_KEY/NOVELYWRITE_CHAT_BASE_URL 可覆盖）。 */
-const chatCfg = loadChatConfig();
-const baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
+let chatCfg = null; // 惰性（被 import 时不可读 config——全新目录无 config.json 会炸；main 内赋值）
+let baseUrl = "";
 
 /** 流式 chat（thinking 禁用，reasoning 模型长任务专用） */
 async function chatStreamNoThinking(messages, opts = {}) {
@@ -272,6 +272,8 @@ export async function main(argv = cliArgs()) {
   const doAll = args.includes("--all");
   const fromN = argVal("from") ? Number(argVal("from")) : null; // --from=N: 从第 N 章建到清单末尾
   const chapters = doAll ? null : (chapterArgs ? chapterArgs.split(",").map(Number) : null);
+  chatCfg = loadChatConfig(); // 惰性读配置（main 调用时——被 import 时不可读，全新目录无 config 会炸）
+  baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
   const CORPUS_PATH = path.join(corpusDir, `${corpusName}-语料.txt`);
   // 按语料名查找专属清单，不存在则回退通用清单（LIST_PATH 模块级 let——readChapterList 模块级函数引用）
   const LIST_CANDIDATES = [

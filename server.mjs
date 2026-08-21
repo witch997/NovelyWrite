@@ -58,10 +58,7 @@ import { persistTask, appendTaskLog, loadTaskLog, listTasks as listTasksFromDisk
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
 
-/* ================= 参数 ================= */
-const args = process.argv.slice(2);
-const port = Number((args.find((a) => a.startsWith("--port=")) ?? "--port=3081").split("=")[1]);
-const host = (args.find((a) => a.startsWith("--host=")) ?? "--host=127.0.0.1").split("=")[1];
+/* ================= 参数（延迟到 main——SEA 入口可在调用前注入 --open 等） ================= */
 
 /* ================= 小工具 ================= */
 const pad4 = (n) => String(n).padStart(4, "0");
@@ -778,8 +775,11 @@ const server = http.createServer(async (req, res) => {
 // 首启建目录骨架（corpus/store 两域/mybook/output）——新安装即可用，open-folder 等按路径操作不报缺目录
 ensureDataDirs();
 
-/** 启动 HTTP 服务（SEA 入口 / 直接运行共用） */
+/** 启动 HTTP 服务（SEA 入口 / 直接运行共用；参数在调用时解析，SEA 入口可先注入 --open） */
 export function main() {
+  const args = process.argv.slice(2);
+  const port = Number((args.find((a) => a.startsWith("--port=")) ?? "--port=3081").split("=")[1]);
+  const host = (args.find((a) => a.startsWith("--host=")) ?? "--host=127.0.0.1").split("=")[1];
   server.listen(port, host, () => {
     // 动态端口：--port=0 时由系统分配，此处取真实端口（必然空闲，杜绝端口冲突）
     const actualPort = server.address().port;

@@ -47,5 +47,6 @@ if (runScript) {
     }
   })();
 } else {
+  process.argv.push("--open"); // exe 双击默认自动打开浏览器（源码模式可加 --no-open? 保留手动控制）
   serverMain(); // 正常启动 HTTP 服务
 }

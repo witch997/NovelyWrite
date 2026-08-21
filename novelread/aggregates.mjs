@@ -48,6 +48,8 @@ function parseArgs() {
   corpusList = path.join(corpusDir, `${project}-章节清单.csv`);
   listPath = fs.existsSync(corpusList) ? corpusList : path.join(corpusDir, "章节清单.csv");
   stateDir = path.join(CODE_ROOT, "novelread", "state"); // LLM 输出留档目录（格式漂移诊断）
+  chatCfg = loadChatConfig(); // 惰性读配置（parseArgs 后）
+  baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
 }
 
 /* ================= ① 确定性重算（原 recompute-aggregates） ================= */
@@ -141,8 +143,7 @@ export function emitSummaries(projectDir) {
 
 /* ================= LLM 客户端（thinking 禁用） ================= */
 
-const chatCfg = loadChatConfig();
-const baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
+let chatCfg = null, baseUrl = ""; // 惰性（被 import 时不可读 config——全新目录无 config.json 会炸；parseArgs 后赋值）
 
 async function chatStreamNoThinking(messages, opts = {}) {
   const body = {

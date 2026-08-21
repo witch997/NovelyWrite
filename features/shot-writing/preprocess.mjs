@@ -41,11 +41,12 @@ function parseArgs() {
   input = argVal("input");
   sessionName = argVal("session");
   if (!input) { console.error("用法: node features/shot-writing/preprocess.mjs --input \"<用户输入>\""); process.exit(2); }
+  chatCfg = loadChatConfig("shot-writing", __dirname); // 惰性读配置（parseArgs 后——被 import 时不可读）
+  baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
 }
 
 /* ---------- LLM 客户端（thinking 禁用，与 host 一致；模型/温度走模块作用域 config） ---------- */
-const chatCfg = loadChatConfig("shot-writing", __dirname); // 根 config.features["shot-writing"] 覆盖全局 + 功能目录 config.json 兼容
-const baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
+let chatCfg = null, baseUrl = ""; // 惰性（被 import 时不可读 config；parseArgs 后赋值）
 
 async function chatStream(messages, maxTokens = 65536) {
   const body = {

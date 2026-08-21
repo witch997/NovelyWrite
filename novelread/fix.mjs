@@ -47,6 +47,8 @@ function parseArgs() {
   }
   projectDir = projectRoot(project); // 域感知：两域自动探测
   chStr = aggregatesMode ? "" : String(ch).padStart(4, "0");
+  chatCfg = loadChatConfig(); // 惰性读配置（parseArgs 后）
+  baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
 }
 
 /* ---------- 枚举（对齐 specs 契约） ---------- */
@@ -206,8 +208,7 @@ if (!aggregatesMode) {
 }
 
 /* ---------- LLM 客户端（thinking 禁用，与 host 一致） ---------- */
-const chatCfg = loadChatConfig();
-const baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
+let chatCfg = null, baseUrl = ""; // 惰性（被 import 时不可读 config；parseArgs 后赋值）
 async function chat(messages, maxTokens = 4096) {
   const body = { model: chatCfg.model, messages, temperature: 0.3, stream: true, thinking: { type: "disabled" }, max_tokens: maxTokens };
   const res = await fetch(`${baseUrl}/chat/completions`, {
