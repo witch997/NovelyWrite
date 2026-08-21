@@ -47,7 +47,7 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, outputDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs, createProject, isSeaRuntime, writingSessionDir, runScriptArgs } from "./shared/paths.mjs";
 import { loadChatConfig, loadConfigSummary, loadRawConfig } from "./shared/config.mjs";
@@ -809,6 +809,10 @@ ensureDataDirs();
 
 /** 启动 HTTP 服务（SEA 入口 / 直接运行共用；参数在调用时解析，SEA 入口可先注入 --open） */
 export function main() {
+  // Windows 控制台默认 GBK(936)，Node 输出 UTF-8 → 乱码；切成 UTF-8 代码页
+  if (process.platform === "win32" && process.stdout.isTTY) {
+    try { execFileSync("chcp", ["65001"], { stdio: "ignore" }); } catch { /* 非交互控制台忽略 */ }
+  }
   const args = process.argv.slice(2);
   const port = Number((args.find((a) => a.startsWith("--port=")) ?? "--port=3081").split("=")[1]);
   const host = (args.find((a) => a.startsWith("--host=")) ?? "--host=127.0.0.1").split("=")[1];
