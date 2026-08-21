@@ -49,7 +49,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, outputDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs, createProject } from "./shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, outputDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs, createProject, isSeaRuntime, writingSessionDir, runScriptArgs } from "./shared/paths.mjs";
 import { loadChatConfig, loadConfigSummary, loadRawConfig } from "./shared/config.mjs";
 import { retrieve } from "./retriever/retriever.mjs";
 import { NovelyError, report } from "./shared/errors.mjs";
@@ -93,10 +93,14 @@ const taskState = new Map(); // id → {id, script, args, status, startedAt, fin
 
 function startTask(script, targs, label) {
   const id = `${label}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-  const p = path.join(CODE_ROOT, script);
   const t = { id, script, args: targs, status: "running", label, startedAt: new Date().toISOString(), finishedAt: null, code: null };
   taskState.set(id, t);
-  const child = spawn(NODE, [p, ...targs], { cwd: CODE_ROOT, env: process.env });
+  // SEA 单文件：无真实子进程脚本 → spawn exe 自身（sea-main 按 NOVELYWRITE_RUN 环境变量分发）
+  const cwd = isSeaRuntime ? DATA_ROOT : CODE_ROOT; // pkg 下 CODE_ROOT 是 snapshot 虚拟路径，spawn cwd 必须真实
+  const [cmd, cmdArgs, cmdEnv] = runScriptArgs(script, targs);
+  const child = isSeaRuntime
+    ? spawn(cmd, cmdArgs, { cwd, env: cmdEnv })
+    : spawn(NODE, [path.join(CODE_ROOT, script), ...targs], { cwd: CODE_ROOT, env: process.env });
   // 日志流 → 独立 log 文件夹（store/_tasks/log/<id>.log，appendTaskLog 内部截断 LOG_KEEP 行）
   let buf = "";
   const push = (chunk) => {
@@ -428,9 +432,9 @@ function apiOpenFolder(body) {
   return { ok: true, dir: key, path: target };
 }
 
-/** 写作会话列表/详情 */
+/** 写作会话列表/详情（数据根 sessions/——SEA 只读区不可写，会话必须落真实磁盘） */
 function apiSessions() {
-  const sessionsDir = path.join(CODE_ROOT, "features", "shot-writing", "sessions");
+  const sessionsDir = writingSessionDir;
   if (!fs.existsSync(sessionsDir)) return { sessions: [] };
   const out = [];
   for (const e of fs.readdirSync(sessionsDir, { withFileTypes: true })) {
@@ -450,7 +454,7 @@ function apiSessions() {
 }
 
 function apiSessionDetail(id) {
-  const dir = path.join(CODE_ROOT, "features", "shot-writing", "sessions", id);
+  const dir = path.join(writingSessionDir, id);
   if (!fs.existsSync(dir)) throw new NovelyError("NOT_FOUND", { context: { id, kind: "session" } });
   const input = fs.existsSync(path.join(dir, "input.txt")) ? fs.readFileSync(path.join(dir, "input.txt"), "utf-8") : null;
   const shots = readJsonSafe(path.join(dir, "shots.json"));
@@ -465,7 +469,7 @@ function apiSessionDetail(id) {
 /** 会话最终成稿：读 output/<sessionId>/<项目名>.final.txt（按会话归档，纯正文，无分镜标签）
  *  项目名从会话目录的 <项目名>draft.txt 推导。 */
 function apiSessionFinal(id) {
-  const dir = path.join(CODE_ROOT, "features", "shot-writing", "sessions", id);
+  const dir = path.join(writingSessionDir, id);
   if (!fs.existsSync(dir)) throw new NovelyError("NOT_FOUND", { context: { id, kind: "session" } });
   const draftFile = fs.readdirSync(dir).find((f) => f.endsWith("draft.txt"));
   const project = draftFile ? draftFile.replace(/draft\.txt$/, "") : null;
@@ -500,8 +504,10 @@ async function apiImportBook(body) {
   fs.writeFileSync(corpusPath, content, "utf-8");
   // 2. 自动生成章节清单（spawn，等待完成；失败时透出 gen-chapter-list 的具体原因）
   await new Promise((resolve, reject) => {
-    const child = spawn(NODE, [path.join(CODE_ROOT, "novelread", "gen-chapter-list.mjs"), base], {
-      cwd: CODE_ROOT,
+    const [cmd, cmdArgs, cmdEnv] = runScriptArgs("novelread/gen-chapter-list.mjs", [base]); // SEA: exe run 自身
+    const child = spawn(cmd, cmdArgs, {
+      cwd: isSeaRuntime ? DATA_ROOT : CODE_ROOT, // pkg 下 snapshot 路径不可做 cwd
+      env: cmdEnv,
       stdio: ["ignore", "ignore", "pipe"],
     });
     let errMsg = "";
@@ -701,16 +707,34 @@ const MIME = {
   ".ico": "image/x-icon", ".map": "application/json",
 };
 
-/** 静态文件托管：优先 webview/ 目录；缺文件回退内置页/404 */
+/** 读前端资源：SEA 优先 sea.getAsset（exe 内嵌）；源码模式读磁盘。返回 Buffer 或 null */
+function readWebAsset(rel) {
+  // rel 形如 "index.html" / "app.js" / "vendor/vditor/vditor.min.js"
+  if (isSeaRuntime) {
+    try {
+      const sea = process.getBuiltinModule?.("node:sea");
+      if (sea?.getAsset) {
+        const asset = sea.getAsset(`webview/${rel}`);
+        return Buffer.isBuffer(asset) ? asset : Buffer.from(asset); // getAsset 返回 ArrayBuffer，转 Buffer
+      }
+    } catch { /* 内嵌缺 → 回退磁盘 */ }
+  }
+  const p = path.join(webviewDir, rel);
+  if (fs.existsSync(p) && fs.statSync(p).isFile()) return fs.readFileSync(p);
+  return null;
+}
+
+/** 静态文件托管：SEA 内嵌 / 磁盘目录优先；缺文件回退内置页/404 */
 function serveStatic(res, pathname) {
   let rel = pathname === "/" ? "/index.html" : pathname;
   // 防目录穿越
   const file = path.normalize(path.join(webviewDir, rel));
   if (!file.startsWith(webviewDir)) { json(res, 403, { ok: false, error: { code: "ARG_INVALID", message: "路径非法" } }); return; }
-  if (fs.existsSync(file) && fs.statSync(file).isFile()) {
-    const ext = path.extname(file).toLowerCase();
+  const buf = readWebAsset(rel.replace(/^\//, ""));
+  if (buf) {
+    const ext = path.extname(rel).toLowerCase();
     res.writeHead(200, { "Content-Type": MIME[ext] ?? "application/octet-stream", "Cache-Control": "no-store" });
-    res.end(fs.readFileSync(file));
+    res.end(buf);
     return;
   }
   // webview/index.html 缺失 → 回退内置最小页；其他静态文件缺失 → 404
@@ -754,24 +778,32 @@ const server = http.createServer(async (req, res) => {
 // 首启建目录骨架（corpus/store 两域/mybook/output）——新安装即可用，open-folder 等按路径操作不报缺目录
 ensureDataDirs();
 
-server.listen(port, host, () => {
-  // 动态端口：--port=0 时由系统分配，此处取真实端口（必然空闲，杜绝端口冲突）
-  const actualPort = server.address().port;
-  const actualUrl = `http://${host}:${actualPort}`;
-  console.log(`\nNovelyWrite HTTP 服务已启动`);
-  console.log(`  地址: ${actualUrl}${port === 0 ? "（动态端口，系统分配）" : ""}`);
-  console.log(`  接口: /api/projects /api/search /api/config /api/sessions /api/tasks/*\n`);
-  // 端口就绪后再打开 web（时序：先起服务、拿端口、再打开页面）
-  // --open 时自动调起系统默认浏览器（Tauri 壳/桌面版改为创建 WebView 窗口指向 actualUrl）
-  if (args.includes("--open")) {
-    const url = actualUrl;
-    try {
-      const cmd = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
-      const cmdArgs = process.platform === "win32" ? ["/c", "start", "", url] : [url];
-      spawn(cmd, cmdArgs, { stdio: "ignore", detached: true }).unref();
-      console.log(`  已打开: ${url}\n`);
-    } catch (err) {
-      console.error(`  自动打开失败（可手动访问 ${url}）: ${err.message}`);
+/** 启动 HTTP 服务（SEA 入口 / 直接运行共用） */
+export function main() {
+  server.listen(port, host, () => {
+    // 动态端口：--port=0 时由系统分配，此处取真实端口（必然空闲，杜绝端口冲突）
+    const actualPort = server.address().port;
+    const actualUrl = `http://${host}:${actualPort}`;
+    console.log(`\nNovelyWrite HTTP 服务已启动`);
+    console.log(`  地址: ${actualUrl}${port === 0 ? "（动态端口，系统分配）" : ""}`);
+    console.log(`  接口: /api/projects /api/search /api/config /api/sessions /api/tasks/*\n`);
+    // 端口就绪后再打开 web（时序：先起服务、拿端口、再打开页面）
+    // --open 时自动调起系统默认浏览器（Tauri 壳/桌面版改为创建 WebView 窗口指向 actualUrl）
+    if (args.includes("--open")) {
+      const url = actualUrl;
+      try {
+        const cmd = process.platform === "win32" ? "cmd" : process.platform === "darwin" ? "open" : "xdg-open";
+        const cmdArgs = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+        spawn(cmd, cmdArgs, { stdio: "ignore", detached: true }).unref();
+        console.log(`  已打开: ${url}\n`);
+      } catch (err) {
+        console.error(`  自动打开失败（可手动访问 ${url}）: ${err.message}`);
+      }
     }
-  }
-});
+  });
+}
+
+// 直接运行（源码模式 node server.mjs）才启动；被 import（SEA 入口）时由调用方启动
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

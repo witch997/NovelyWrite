@@ -404,7 +404,7 @@ async function main() {
 }
 
 // 允许作为模块导入（供 ensure 逻辑调用），直接运行时执行 main
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => { console.error(err); process.exit(1); });
 }
 

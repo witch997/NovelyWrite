@@ -24,22 +24,27 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { checkJsonText } from "./verify-json.mjs";
-import { projectRoot } from "../shared/paths.mjs";
+import { projectRoot, cliArgs, runScriptArgs } from "../shared/paths.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+let args, project, chapterArg, doAll, contract, projectDir = null; // 惰性初始化（被 import 时不可有副作用）
 
-const args = process.argv.slice(2);
-const project = args.find((a) => !a.startsWith("--")) ?? null;
-const chapterArg = args.filter((a) => !a.startsWith("--") && project !== a)[0] ?? null;
-const doAll = args.includes("--all");
-const contract = !args.includes("--no-contract");
-
-let projectDir = null;
-try { projectDir = project ? projectRoot(project) : null; } catch { projectDir = null; }
-if (!project || !projectDir || !fs.existsSync(projectDir)) { console.error(`project 不存在: ${project}`); process.exit(2); }
+/** 解析 CLI 参数（延迟到 main 调用——被 sea-main import 时无参数，不能执行 projectRoot/exit） */
+function parseArgs() {
+  if (projectDir) return;
+  args = cliArgs(); // SEA 分发兼容（过滤 "run <script>" 前缀）
+  project = args.find((a) => !a.startsWith("--")) ?? null;
+  chapterArg = args.filter((a) => !a.startsWith("--") && project !== a)[0] ?? null;
+  doAll = args.includes("--all");
+  contract = !args.includes("--no-contract");
+  projectDir = null;
+  try { projectDir = project ? projectRoot(project) : null; } catch { projectDir = null; }
+  if (!project || !projectDir || !fs.existsSync(projectDir)) { console.error(`project 不存在: ${project}`); process.exit(2); }
+}
 
 /* ---------- 全书模式（--all）：循环单章 + 聚合层检查 ---------- */
-if (doAll) {
+export function main() {
+  parseArgs(); // 惰性解析 CLI 参数
+  if (doAll) {
   const splitDir = path.join(projectDir, "语料分章");
   const chs = fs.existsSync(splitDir)
     ? fs.readdirSync(splitDir).map((f) => f.match(/^第0*(\d+)章/)?.[1]).filter(Boolean).map(Number).sort((a, b) => a - b)
@@ -48,7 +53,7 @@ if (doAll) {
   let allIssues = 0;
   for (const ch of chs) {
     try {
-      const out = execFileSync(process.execPath, [fileURLToPath(import.meta.url), project, String(ch), ...(contract ? [] : ["--no-contract"])], { encoding: "utf-8" });
+      const [rCmd, rArgs, rEnv] = runScriptArgs("novelread/check-chapter.mjs", [project, String(ch), ...(contract ? [] : ["--no-contract"])]); const out = execFileSync(rCmd, rArgs, { encoding: "utf-8", env: rEnv });
       // 输出仅保留 ✗/✅ 关键行
       const lines = out.split("\n").filter((l) => l.includes("✗") || l.includes("✅") || l.includes("❌"));
       for (const l of lines) console.log(l.trim());
@@ -253,10 +258,16 @@ if (ca) {
 }
 
 /* ---- 汇总 ---- */
-if (issues.length === 0) {
-  console.log(`\n✅ 第${chStr}章 章级检测通过（4 文件齐全 + 语法合法${contract ? " + 契约" : ""}）`);
-  process.exit(0);
+  if (issues.length === 0) {
+    console.log(`\n✅ 第${chStr}章 章级检测通过（4 文件齐全 + 语法合法${contract ? " + 契约" : ""}）`);
+    process.exit(0);
+  }
+  console.log(`\n❌ 第${chStr}章 章级检测发现 ${issues.length} 项问题:`);
+  for (const i of issues) console.log(`   - ${i}`);
+  process.exit(1);
 }
-console.log(`\n❌ 第${chStr}章 章级检测发现 ${issues.length} 项问题:`);
-for (const i of issues) console.log(`   - ${i}`);
-process.exit(1);
+
+// 直接运行（源码 CLI / SEA 分发调用 export main）——被 import 时仅当直接运行才执行
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main();
+}

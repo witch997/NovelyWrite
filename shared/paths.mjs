@@ -2,23 +2,26 @@
  * paths.mjs — 路径统一模块（打包/分发支持 + 域化布局）
  *
  * 路径分离原则：
- *   代码根（CODE_ROOT）：包内只读，打包后不变（novelread/retriever/...）
- *   数据根（DATA_ROOT）：外部可写目录，含 config.json / corpus / store / mybook
+ *   代码根（CODE_ROOT）：包内只读（SEA 打包后 = exe 所在目录）
+ *   数据根（DATA_ROOT）：外部可写目录，含 config.json / corpus / store / mybook / sessions / output
+ *
+ * SEA 单文件（官方 node:sea）：
+ *   - 代码内嵌进 exe（无真实代码目录），CODE_ROOT = exe 所在目录（旁置数据/留档可写）
+ *   - 前端资源 webview/ 与 SKILL 经 sea.getAsset 从 exe 内读（见 skill-slice / server serveStatic）
+ *   - 所有写路径必须落在 DATA_ROOT（exe 旁 或 NOVELYWRITE_HOME）
+ *   - 判断：process.execPath 不是 node → SEA 运行时（也可 NOVELYWRITE_SEA=1 强制，便于测试）
  *
  * 数据根确定优先级：
  *   1. 环境变量 NOVELYWRITE_HOME（显式指定数据根，如 NOVELYWRITE_HOME=/data/lvshi）
- *   2. 默认：代码根本身（当前工作区布局，NovelyWrite/ 下放 config/corpus/store）
+ *   2. SEA：exe 所在目录（便携：exe + 数据一起拷走）
+ *   3. 默认：代码根本身（源码模式，NovelyWrite/ 下放 config/corpus/store）
  *     ——注意：不用 DSH_HOME（那是 harness 注入的变量，指向 ~/.dsh，会冲突）
  *
  * 域化布局（store 下两域 + 资产区 mybook）：
  *   store/myproject/<书>project/   域：我的作品（用户自己的书）
  *   store/exproject/<书>project/   域：外部知识库（语料标注的书）
  *   mybook/<书>/                  资产区：用户原稿（实时保存，不可再生）
- *
- * 约定：
- *   - 域 = 目录位置（无注册表），projectDirOf() 自动探测两域
- *   - 书名全局唯一（禁止同名），createProject() 创建时检查
- *   - 每书独立派生目录：<书>project/derived/dict + derived/vector（英文，见 rag-core.mjs）
+ *   sessions/                      写作会话（数据根下——SEA 只读区不可写）
  *
  * 用法：
  *   import { CODE_ROOT, DATA_ROOT, configPath, corpusDir, storeDir, projectRoot, createProject } from "../shared/paths.mjs";
@@ -30,13 +33,24 @@ import { NovelyError, E } from "./errors.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/** 代码根（本文件在 <root>/shared/ 下） */
-export const CODE_ROOT = path.resolve(__dirname, "..");
+/** 打包运行时判断：@yao-pkg/pkg 注入 process.pkg；NOVELYWRITE_SEA=1 可强制；execPath 非 node 兜底 */
+export const isSeaRuntime = !!process.pkg
+  || process.env.NOVELYWRITE_SEA === "1"
+  || (process.platform === "win32"
+    ? path.basename(process.execPath).toLowerCase() !== "node.exe"
+    : path.basename(process.execPath) !== "node");
 
-/** 数据根：NOVELYWRITE_HOME > 默认（代码根，即 NovelyWrite/）——不用 DSH_HOME（harness 占用） */
+/**
+ * 代码根：只读资源位置（webview / specs / 代码）。
+ *   源码模式：本文件在 <root>/shared/ → 上级 = 仓库根
+ *   pkg bundle：__dirname = /snapshot/NovelyWrite（bundle 在仓库根）→ 直接用
+ */
+export const CODE_ROOT = __dirname.endsWith(path.sep + "shared") ? path.resolve(__dirname, "..") : __dirname;
+
+/** 数据根：NOVELYWRITE_HOME > pkg(exe 目录，真实可写) > 源码(代码根)——不用 DSH_HOME（harness 占用） */
 export const DATA_ROOT = (() => {
   if (process.env.NOVELYWRITE_HOME) return path.resolve(process.env.NOVELYWRITE_HOME);
-  return CODE_ROOT; // 默认：数据根 = 代码根（NovelyWrite/ 下放 config/corpus/store）
+  return process.pkg ? path.dirname(process.execPath) : CODE_ROOT;
 })();
 
 /** config.json 路径（数据根下） */
@@ -59,6 +73,33 @@ export const mybookDir = path.join(DATA_ROOT, "mybook");
 
 /** 产出区：成稿/报告（数据根下 output——打包后代码根只读，产出必须随数据走） */
 export const outputDir = path.join(DATA_ROOT, "output");
+
+/** 写作会话（数据根下 sessions——SEA 单文件内嵌区只读，会话必须落真实磁盘） */
+export const writingSessionDir = path.join(DATA_ROOT, "sessions");
+
+/**
+ * CLI 参数（打包分发兼容）：exe 子进程 argv 形如 ["--run", "novelread/host-exec.mjs", ...真实参数]，
+ * 过滤掉 "--run <script>" 前缀后才是脚本自己的参数。源码模式无前缀，原样返回。
+ * （--run 以 -- 开头，避免 pkg 把第一个参数当模块路径加载）
+ */
+export function cliArgs() {
+  return process.argv.slice(2); // 官方 SEA 子进程 argv = 任务参数原样（无前缀）
+}
+
+/**
+ * 子脚本执行参数（打包分发兼容）：
+ *   打包：spawn 当前 exe + 原始参数，用环境变量 NOVELYWRITE_RUN 传脚本名
+ *         （pkg 会把 argv[1] 当模块加载，故脚本名不能走 argv）
+ *   源码：spawn node + [<CODE_ROOT>/scriptRel, ...args]
+ * @returns {[string, string[], object]} [命令, 参数数组, 环境变量]（配合 execFileSync/spawn 展开使用）
+ */
+export function runScriptArgs(scriptRel, scriptArgs = []) {
+  if (isSeaRuntime) {
+    // 官方 SEA：argv 无模块特性，直接传参；脚本名走环境变量（sea-main 分发）
+    return [process.execPath, scriptArgs, { ...process.env, NOVELYWRITE_RUN: scriptRel }];
+  }
+  return [process.execPath, [path.join(CODE_ROOT, scriptRel), ...scriptArgs], process.env];
+}
 
 /** 域标识常量 */
 export const DOMAIN = { MY: "my", EX: "ex" };

@@ -18,10 +18,21 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { CODE_ROOT, isSeaRuntime } from "./paths.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SKILL_PATH = path.join(__dirname, "..", "novelread", "specs", "语料分析-SKILL.md");
+const SKILL_PATH = path.join(CODE_ROOT, "novelread", "specs", "语料分析-SKILL.md");
+const SKILL_ASSET = "novelread/specs/语料分析-SKILL.md"; // SEA 内嵌资源键
+
+/** 读 SKILL 全文：SEA 优先 sea.getAsset（内嵌），源码模式读磁盘 */
+function readSkillText() {
+  if (isSeaRuntime) {
+    try {
+      const sea = process.getBuiltinModule?.("node:sea"); // Node 22.3+；低版本返回 undefined
+      if (sea?.getAsset) return Buffer.from(sea.getAsset(SKILL_ASSET)).toString("utf-8"); // getAsset 返回 ArrayBuffer
+    } catch { /* 内嵌读取失败 → 回退磁盘 */ }
+  }
+  return fs.readFileSync(SKILL_PATH, "utf-8");
+}
 
 /** 按 markdown 标题切段：返回 [{title, body}]（title 含标题行，body 为后续内容直到下一标题） */
 function parseSections(text) {
@@ -96,7 +107,7 @@ const LAYER_MAP = {
  * @returns {string} system prompt 文本
  */
 export function loadSkillSlice(layer) {
-  const full = fs.readFileSync(SKILL_PATH, "utf-8");
+  const full = readSkillText();
   if (layer === "full") return full;
   const wanted = LAYER_MAP[layer];
   if (!wanted) throw new Error(`未知 SKILL 切片层: ${layer}（可选: ${Object.keys(LAYER_MAP).join("/")}/full）`);
@@ -112,7 +123,7 @@ export function loadSkillSlice(layer) {
 
 /** 调试：打印各层切片大小（字符数） */
 export function debugSlices() {
-  const full = fs.readFileSync(SKILL_PATH, "utf-8");
+  const full = readSkillText();
   console.log(`[skill-slice] SKILL 全文: ${full.length} 字符`);
   for (const layer of Object.keys(LAYER_MAP)) {
     console.log(`  ${layer}: ${loadSkillSlice(layer).length} 字符`);

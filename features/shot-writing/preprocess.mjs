@@ -21,21 +21,27 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadChatConfig } from "../../shared/config.mjs";
+import { writingSessionDir, cliArgs } from "../../shared/paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const sessionsDir = path.join(__dirname, "sessions");
+const sessionsDir = writingSessionDir; // 数据根 sessions/（SEA 只读区不可写）
 
-/* ---------- 参数 ---------- */
-const args = process.argv.slice(2);
-function argVal(name) {
-  const a = args.find((x) => x.startsWith(`--${name}=`));
-  if (a) return a.slice(name.length + 3);
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
+let args, input, sessionName; // 惰性初始化（被 import 时不可 exit）
+
+/* ---------- 参数（延迟到 main——被 sea-main import 时无参数，不能 exit） ---------- */
+function parseArgs() {
+  if (input) return;
+  args = cliArgs(); // SEA 分发兼容（过滤 "run <script>" 前缀）
+  const argVal = (name) => {
+    const a = args.find((x) => x.startsWith(`--${name}=`));
+    if (a) return a.slice(name.length + 3);
+    const i = args.indexOf(`--${name}`);
+    return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
+  };
+  input = argVal("input");
+  sessionName = argVal("session");
+  if (!input) { console.error("用法: node features/shot-writing/preprocess.mjs --input \"<用户输入>\""); process.exit(2); }
 }
-const input = argVal("input");
-const sessionName = argVal("session");
-if (!input) { console.error("用法: node features/shot-writing/preprocess.mjs --input \"<用户输入>\""); process.exit(2); }
 
 /* ---------- LLM 客户端（thinking 禁用，与 host 一致；模型/温度走模块作用域 config） ---------- */
 const chatCfg = loadChatConfig("shot-writing", __dirname); // 根 config.features["shot-writing"] 覆盖全局 + 功能目录 config.json 兼容
@@ -95,7 +101,8 @@ function ts() {
 }
 
 /* ---------- 主流程 ---------- */
-async function main() {
+export async function main() {
+  parseArgs(); // 惰性解析 CLI 参数（SEA 分发时 main 无参）
   console.log(`[preprocess] 用户输入（${input.length} 字符）: ${input.slice(0, 60)}${input.length > 60 ? "…" : ""}`);
 
   // 检测用户是否已自带内容分块逻辑：
@@ -175,12 +182,16 @@ async function main() {
   fs.writeFileSync(path.join(sessionDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n", "utf-8");
 
   console.log(`\n✅ 会话已建立: ${sessionId}`);
-  console.log(`   目录: features/shot-writing/sessions/${sessionId}/`);
+  console.log(`   目录: ${sessionsDir}/${sessionId}/`);
   console.log(`   概括: ${summary} | 分镜: ${shots.length} 镜`);
   console.log(`\n=== 分镜序列 ===`);
   for (const s of shots) {
     console.log(`  [${s.seq}] ${s.type} ${JSON.stringify(s.funcs ?? [])}「${s.label ?? ""}」 ${(s.content ?? "").slice(0, 50)}${(s.content ?? "").length > 50 ? "…" : ""}`);
   }
-  console.log(`\n[preprocess] 完成。后续：recall（召回参考）→ write（写作）→ draft 复制到 NovelyWrite/output/`);
+  console.log(`\n[preprocess] 完成。后续：recall（召回参考）→ write（写作）→ draft 复制到 output/`);
 }
-main().catch((err) => { console.error("[preprocess] 失败:", err.message); process.exit(1); });
+
+// 直接运行（源码 CLI / SEA 分发调用 export main）
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => { console.error("[preprocess] 失败:", err.message); process.exit(1); });
+}

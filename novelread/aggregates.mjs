@@ -31,18 +31,24 @@ import { checkJsonText } from "./verify-json.mjs";
 import { buildLexicalIndex, buildVectors } from "../retriever/build-derived.mjs";
 import { ensureDerived } from "../retriever/ensure-derived.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
-import { CODE_ROOT, DATA_ROOT, configPath, corpusDir, storeDir, projectRoot } from "../shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, configPath, corpusDir, storeDir, projectRoot, cliArgs, runScriptArgs } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const args = process.argv.slice(2);
-const project = args.find((a) => !a.startsWith("--")) ?? "大王饶命";
-const flags = args.filter((a) => a.startsWith("--"));
-const projectDir = projectRoot(project); // 域感知：两域自动探测
-const corpusList = path.join(corpusDir, `${project}-章节清单.csv`);
-const listPath = fs.existsSync(corpusList) ? corpusList : path.join(corpusDir, "章节清单.csv");
-const stateDir = path.join(CODE_ROOT, "novelread", "state"); // LLM 输出留档目录（格式漂移诊断）
+let args, project, flags, projectDir, corpusList, listPath, stateDir; // 惰性初始化（被 import 时不可有副作用）
+
+/** 解析 CLI 参数（延迟到 main 调用——被 sea-main import 时无参数，不能执行 projectRoot） */
+function parseArgs() {
+  if (projectDir) return;
+  args = cliArgs(); // SEA 分发兼容（过滤 "run <script>" 前缀）
+  project = args.find((a) => !a.startsWith("--")) ?? "大王饶命";
+  flags = args.filter((a) => a.startsWith("--"));
+  projectDir = projectRoot(project); // 域感知：两域自动探测
+  corpusList = path.join(corpusDir, `${project}-章节清单.csv`);
+  listPath = fs.existsSync(corpusList) ? corpusList : path.join(corpusDir, "章节清单.csv");
+  stateDir = path.join(CODE_ROOT, "novelread", "state"); // LLM 输出留档目录（格式漂移诊断）
+}
 
 /* ================= ① 确定性重算（原 recompute-aggregates） ================= */
 
@@ -581,7 +587,7 @@ export function finalizePart(projectDir, project) {
   // 契约门（宽松：check-chapter --all 计数）
   let contractIssues = 0, contractReport = [];
   try {
-    const out = execFileSync(process.execPath, [path.join(__dirname, "check-chapter.mjs"), project, "--all"], { encoding: "utf-8" });
+    const [rCmd, rArgs, rEnv] = runScriptArgs("novelread/check-chapter.mjs", [project, "--all"]); const out = execFileSync(rCmd, rArgs, { encoding: "utf-8", env: rEnv });
     const badLines = out.split("\n").filter((l) => l.includes("✗") || l.includes("❌"));
     contractIssues = badLines.length;
     contractReport = badLines.map((l) => l.trim()).slice(0, 20);
@@ -629,7 +635,8 @@ export function finalizePart(projectDir, project) {
 
 /* ================= main ================= */
 
-async function main() {
+export async function main() {
+  parseArgs(); // 惰性解析 CLI 参数（SEA 分发时 main 无参，参数来自 cliArgs 过滤后的 process.argv）
   if (!fs.existsSync(projectDir)) { console.error(`project 不存在: ${projectDir}`); process.exit(2); }
 
   if (flags.includes("--emit-summaries")) { emitSummaries(projectDir); process.exit(0); }
@@ -722,4 +729,8 @@ async function main() {
 
   console.log("\n✅ 阶段二完成：聚合层 + 终检通过 + 索引已更新（project-meta.json 已更新）");
 }
-main().catch((err) => { console.error("[aggregates] 失败:", err.message); process.exit(1); });
+
+// 直接运行（源码 CLI / SEA 分发调用 export main）——被 import 时仅当直接运行才执行
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => { console.error("[aggregates] 失败:", err.message); process.exit(1); });
+}

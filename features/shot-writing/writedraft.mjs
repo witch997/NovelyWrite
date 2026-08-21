@@ -34,61 +34,63 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT, DATA_ROOT } from "../../shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, writingSessionDir, cliArgs } from "../../shared/paths.mjs";
 import { loadChatConfig } from "../../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const sessionsDir = path.join(__dirname, "sessions");
-const outputDir = path.join(DATA_ROOT, "output", sessionId); // 最终稿按会话归档: output/<sessionId>/(数据根下)
+const sessionsDir = writingSessionDir; // 数据根 sessions/（SEA 只读区不可写）
 
-/* ---------- 参数 ---------- */
-const args = process.argv.slice(2);
-function argVal(name) {
-  const a = args.find((x) => x.startsWith(`--${name}=`));
-  if (a) return a.slice(name.length + 3);
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
+let args, sessionId, project, outputDir, sessionDir, recalls, shots, outline, chatCfg, baseUrl, shotLenConfig, lenTargetText, fixDialogue; // 惰性初始化（被 import 时不可有副作用）
+
+/* ---------- 初始化（延迟到 main——被 sea-main import 时无参数，不能 exit/读文件） ---------- */
+function initWritedraft() {
+  if (sessionId) return;
+  args = cliArgs(); // SEA 分发兼容（过滤 "run <script>" 前缀）
+  const argVal = (name) => {
+    const a = args.find((x) => x.startsWith(`--${name}=`));
+    if (a) return a.slice(name.length + 3);
+    const i = args.indexOf(`--${name}`);
+    return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
+  };
+  sessionId = argVal("session");
+  project = argVal("project") ?? "未命名"; // 项目名（用于 draft 文件名）
+  if (!sessionId) { console.error("用法: node features/shot-writing/writedraft.mjs --session <session-id> [--project <语料名>]"); process.exit(2); }
+  outputDir = path.join(DATA_ROOT, "output", sessionId); // 最终稿按会话归档: output/<sessionId>/(数据根下)
+  sessionDir = path.join(sessionsDir, sessionId);
+
+  // 读 recalls.json
+  const recallsPath = path.join(sessionDir, "recalls.json");
+  if (!fs.existsSync(recallsPath)) {
+    console.error(`[writedraft] recalls.json 不存在: ${recallsPath}（先跑 recall）`);
+    process.exit(1);
+  }
+  recalls = JSON.parse(fs.readFileSync(recallsPath, "utf-8"));
+  shots = recalls.shots ?? [];
+  console.log(`[writedraft] 会话 ${sessionId} | 项目 ${project} | 分镜 ${shots.length} 镜`);
+  console.log("\n[writedraft] 阶段① 逐镜写作（每镜一次 LLM，thinking 开）...");
+
+  // 读原始章纲（input.txt，阶段② 整合输入之一）
+  const inputPath = path.join(sessionDir, "input.txt");
+  outline = fs.existsSync(inputPath) ? fs.readFileSync(inputPath, "utf-8") : recalls.summary ?? "";
+
+  // LLM 客户端（thinking 开——推理型任务；模型/温度走模块作用域 config）
+  chatCfg = loadChatConfig("shot-writing", __dirname); // 根 config.features["shot-writing"] 覆盖全局 + 功能目录 config.json 兼容
+  baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
+
+  // 字数基准配置（每镜字数目标）：--shot-len=N（命令行）> config features.shot-writing.chat.shotLen > 默认 200
+  const DEFAULT_SHOT_LEN = 200;
+  shotLenConfig = (() => {
+    const fromArg = args.find((a) => a.startsWith("--shot-len="));
+    if (fromArg) return JSON.parse(fromArg.slice("--shot-len=".length));
+    if (typeof chatCfg.shotLen !== "undefined") return chatCfg.shotLen;
+    return DEFAULT_SHOT_LEN;
+  })();
+  lenTargetText = Array.isArray(shotLenConfig)
+    ? `${shotLenConfig[0]}-${shotLenConfig[1]} 字`
+    : `约 ${shotLenConfig} 字`;
+  console.log(`[writedraft] 字数基准: ${lenTargetText}（来源: ${args.some((a) => a.startsWith("--shot-len=")) ? "命令行" : typeof chatCfg.shotLen !== "undefined" ? "config shotLen" : "默认"}）`);
+  fixDialogue = !args.includes("--no-fix-dialogue"); // 对话修复（脚本确定性，默认开）
 }
-const sessionId = argVal("session");
-const project = argVal("project") ?? "未命名"; // 项目名（用于 draft 文件名）
-if (!sessionId) { console.error("用法: node features/shot-writing/writedraft.mjs --session <session-id> [--project <语料名>]"); process.exit(2); }
-
-/* ---------- 读 recalls.json ---------- */
-const sessionDir = path.join(sessionsDir, sessionId);
-const recallsPath = path.join(sessionDir, "recalls.json");
-if (!fs.existsSync(recallsPath)) {
-  console.error(`[writedraft] recalls.json 不存在: ${recallsPath}（先跑 recall）`);
-  process.exit(1);
-}
-const recalls = JSON.parse(fs.readFileSync(recallsPath, "utf-8"));
-const shots = recalls.shots ?? [];
-console.log(`[writedraft] 会话 ${sessionId} | 项目 ${project} | 分镜 ${shots.length} 镜`);
-
-/* ---------- 读原始章纲（input.txt，阶段② 整合输入之一） ---------- */
-const inputPath = path.join(sessionDir, "input.txt");
-const outline = fs.existsSync(inputPath) ? fs.readFileSync(inputPath, "utf-8") : recalls.summary ?? "";
-
-/* ---------- LLM 客户端（thinking 开——推理型任务；模型/温度走模块作用域 config） ---------- */
-const chatCfg = loadChatConfig("shot-writing", __dirname); // 根 config.features["shot-writing"] 覆盖全局 + 功能目录 config.json 兼容
-const baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
-
-/* ---------- 字数基准配置（每镜字数目标） ----------
- * 优先级：--shot-len=N（命令行）> config features.shot-writing.chat.shotLen > 默认 200
- * shotLen 取值：
- *   number → "约 N 字"
- *   [min, max] → "N-M 字"
- */
-const DEFAULT_SHOT_LEN = 200;
-const shotLenConfig = (() => {
-  const fromArg = args.find((a) => a.startsWith("--shot-len="));
-  if (fromArg) return JSON.parse(fromArg.slice("--shot-len=".length));
-  if (typeof chatCfg.shotLen !== "undefined") return chatCfg.shotLen;
-  return DEFAULT_SHOT_LEN;
-})();
-const lenTargetText = Array.isArray(shotLenConfig)
-  ? `${shotLenConfig[0]}-${shotLenConfig[1]} 字`
-  : `约 ${shotLenConfig} 字`;
-console.log(`[writedraft] 字数基准: ${lenTargetText}（来源: ${args.some((a) => a.startsWith("--shot-len=")) ? "命令行" : typeof chatCfg.shotLen !== "undefined" ? "config shotLen" : "默认"}）`);
 
 async function chat(messages, maxTokens = null, thinking = false, temperature = null) {
   const body = {
@@ -150,7 +152,6 @@ export function tempFromRefs(refsText, min = TEMP_MIN, max = TEMP_MAX) {
 }
 
 /* ========== 阶段① 逐镜写作 + 拼接带标签 draft ========== */
-console.log("\n[writedraft] 阶段① 逐镜写作（每镜一次 LLM，thinking 开）...");
 const WRITE_SYSTEM = `你是起点中文网风格的网文作者。根据【任务】写作一个分镜（镜头级片段），
 参考【写作参考】中前文类似分镜的行文节奏、互动风格和角色风格。
 
@@ -173,43 +174,12 @@ const WRITE_SYSTEM = `你是起点中文网风格的网文作者。根据【任�
 - 本镜是章节中的独立片段，不写场景开头/结尾的过渡语（衔接由整合阶段统一处理）
 - 主角称呼与上下镜保持一致（本镜若出现人物，沿用其已有称呼，不自行改名）`;
 
-/* ---------- 风格指纹提炼（默认关闭，--profile 显式开启） ----------
- * 定位：跨书召回时统一风格基调的"保险"；同书召回下与逐镜风格观察(做法A)冗余，
- *   且指纹提炼读全部 refs 有剧情泄漏风险——故默认关闭。
- * 用法：--profile 开启（跨书/风格混杂场景）；默认跳过，靠逐镜风格观察 + 借用规则。
- */
-const useProfile = args.includes("--profile");
-let styleProfile = "";
-if (useProfile) {
-  console.log("\n[writedraft] 提炼风格指纹（--profile，读全部参考 → 显式风格契约）...");
-  // 每条参考前标 "-"，表示这是不同的独立分镜（避免被当成一整段连续文本）
-  const allRefsText = (recalls.shots ?? [])
-    .flatMap((s) => s.refs ?? [])
-    .map((r) => r.text ?? "")
-    .filter(Boolean)
-    .map((t) => `- ${t}`)   // 每条前加 "-" 列表标记
-    .join("\n");
-  if (allRefsText.trim().length > 20) {
-    const profileRaw = await chat([
-      { role: "system", content: "你是风格分析师。读下面的参考文本，提炼出它的写作风格指纹，输出纯文本（不要 JSON 格式符号）。" },
-      { role: "user", content: `参考文本（每个 "- " 开头是一条独立的分镜，不是连续段落）：\n${allRefsText.slice(0, 3000)}\n\n请输出风格指纹，覆盖：\n1. 句式（短句占比/平均长度）\n2. 口语特征（语气词/吐槽腔/市井比喻）\n3. 叙述视角与节奏（段落长短/停顿习惯/信息是否留白）\n4. 情绪表达（直接命名还是动作暗示）\n5. 禁忌（什么词/什么写法绝不出现）` },
-    ], null, false, 0.3); // 提炼用低温度，稳定；thinking 禁；max_tokens 不限制
-    styleProfile = profileRaw.trim();
-    console.log(`  [风格指纹] 已提炼（${styleProfile.length} 字符）`);
-  } else {
-    console.log("  [风格指纹] 参考不足，跳过提炼");
-  }
-} else {
-  console.log("[writedraft] 风格指纹：默认关闭（--profile 可开启）");
-}
-
 /* ---------- 对话修复（脚本确定性，默认开；--no-fix-dialogue 关闭） ----------
  * 覆盖三类对话问题（全部确定性正则，零 LLM）：
  *  ① 拆句：「"A"动作"B"」→ 动作前置合并「动作"A。B"」（含标点智能处理）
  *  ② 逗号代替冒号：动作+逗号+对话（如 他说，"B"）→ 冒号（他说："B"）
  *  ③ 无标点直接引对话（如 他走过来"B"）→ 冒号（他走过来："B"）
  */
-const fixDialogue = !args.includes("--no-fix-dialogue");
 
 function fixSplitDialogue(text) {
   if (!fixDialogue) return text;
@@ -268,8 +238,36 @@ function fixSplitDialogue(text) {
   return t;
 }
 
-const shotBodies = [];
-for (let si = 0; si < shots.length; si++) {
+/* ================= 主流程（SEA 分发调用 export main） ================= */
+export async function main() {
+  initWritedraft(); // 惰性初始化（参数/recalls/配置）
+  const useProfile = args.includes("--profile"); // 风格指纹（默认关闭）
+  // 风格指纹（--profile 开启；顶层 await 移入 main，避免模块顶层 await 阻碍 CJS 打包）
+  let styleProfile = "";
+  if (useProfile) {
+    console.log("\n[writedraft] 提炼风格指纹（--profile，读全部参考 → 显式风格契约）...");
+    const allRefsText = (recalls.shots ?? [])
+      .flatMap((s) => s.refs ?? [])
+      .map((r) => r.text ?? "")
+      .filter(Boolean)
+      .map((t) => `- ${t}`)
+      .join("\n");
+    if (allRefsText.trim().length > 20) {
+      const profileRaw = await chat([
+        { role: "system", content: "你是风格分析师。读下面的参考文本，提炼出它的写作风格指纹，输出纯文本（不要 JSON 格式符号）。" },
+        { role: "user", content: `参考文本（每个 "- " 开头是一条独立的分镜，不是连续段落）：\n${allRefsText.slice(0, 3000)}\n\n请输出风格指纹，覆盖：\n1. 句式（短句占比/平均长度）\n2. 口语特征（语气词/吐槽腔/市井比喻）\n3. 叙述视角与节奏（段落长短/停顿习惯/信息是否留白）\n4. 情绪表达（直接命名还是动作暗示）\n5. 禁忌（什么词/什么写法绝不出现）` },
+      ], null, false, 0.3);
+      styleProfile = profileRaw.trim();
+      console.log(`  [风格指纹] 已提炼（${styleProfile.length} 字符）`);
+    } else {
+      console.log("  [风格指纹] 参考不足，跳过提炼");
+    }
+  } else {
+    console.log("[writedraft] 风格指纹：默认关闭（--profile 可开启）");
+  }
+
+  const shotBodies = [];
+  for (let si = 0; si < shots.length; si++) {
   const shot = shots[si];
   const refs = shot.refs ?? [];
   const refsText = refs.length
@@ -349,7 +347,7 @@ const draftName = `${project}draft.txt`; // <项目名>draft.txt（现有风格�
 fs.mkdirSync(sessionDir, { recursive: true });
 fs.writeFileSync(path.join(sessionDir, draftName), taggedDraft, "utf-8");
 console.log(`\n[writedraft] 阶段① draft 已落盘（中间产物，带分镜标签）:`);
-console.log(`   sessions/${sessionId}/${draftName}（${taggedDraft.length} 字符）`);
+console.log(`   ${sessionsDir}/${sessionId}/${draftName}（${taggedDraft.length} 字符）`);
 
 /* ========== 测试模式：不做最终整合，分镜完成后直接拼接 ==========
  * --test-mode 时跳过阶段②全文整合，把带标签的分镜文本直接作为最终稿落盘。
@@ -363,8 +361,8 @@ if (testMode) {
   const finalName = `${project}.final.txt`;
   fs.writeFileSync(path.join(outputDir, finalName), finalText, "utf-8");
   console.log(`\n✅ 最终稿已生成（测试模式，未整合）:`);
-  console.log(`   中间产物: features/shot-writing/sessions/${sessionId}/${draftName}（带标签，会话存档）`);
-  console.log(`   最终稿:   NovelyWrite/output/${sessionId}/${finalName}（测试模式：分镜直接拼接，含标签）`);
+  console.log(`   中间产物: ${sessionsDir}/${sessionId}/${draftName}（带标签，会话存档）`);
+  console.log(`   最终稿:   output/${sessionId}/${finalName}（测试模式：分镜直接拼接，含标签）`);
   console.log(`\n=== 最终稿预览 ===`);
   console.log(finalText.slice(0, 600) + (finalText.length > 600 ? "\n…" : ""));
   process.exit(0);
@@ -403,7 +401,13 @@ fs.mkdirSync(outputDir, { recursive: true });
 const finalName = `${project}.final.txt`; // <项目名>.final.txt（最终整合稿，纯正文）
 fs.writeFileSync(path.join(outputDir, finalName), finalOut, "utf-8");
 console.log(`\n✅ 最终稿已生成:`);
-console.log(`   中间产物: features/shot-writing/sessions/${sessionId}/${draftName}（带标签，会话存档）`);
-console.log(`   最终稿:   NovelyWrite/output/${sessionId}/${finalName}（纯正文，用户可读）`);
+console.log(`   中间产物: ${sessionsDir}/${sessionId}/${draftName}（带标签，会话存档）`);
+console.log(`   最终稿:   output/${sessionId}/${finalName}（纯正文，用户可读）`);
 console.log(`\n=== 最终稿预览 ===`);
 console.log(finalOut.slice(0, 600) + (finalOut.length > 600 ? "\n…" : ""));
+}
+
+// 直接运行（源码 CLI / SEA 分发调用 export main）
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => { console.error("[writedraft] 失败:", err.message); process.exit(1); });
+}

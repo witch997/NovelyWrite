@@ -117,7 +117,7 @@ export function deriveChapter(projectDir, ch) {
 }
 
 /* ---------- CLI ---------- */
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
   const project = args.find((a) => !a.startsWith("--"));
   const chNum = Number(args.find((a) => /^\d+$/.test(a)));

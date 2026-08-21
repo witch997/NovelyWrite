@@ -24,7 +24,7 @@ import { checkJsonText } from "./verify-json.mjs";
 import { execFileSync } from "node:child_process";
 import { deriveChapter } from "./derive-chapter.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir } from "../shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir, cliArgs, runScriptArgs } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -129,36 +129,7 @@ async function chatStreamNoThinking(messages, opts = {}) {
   throw lastError;
 }
 
-// ---------- 解析参数 ----------
-const args = process.argv.slice(2);
-function argVal(name) {
-  const a = args.find((x) => x.startsWith(`--${name}=`));
-  return a ? a.slice(name.length + 3) : null;
-}
-const corpusName = argVal("corpus") ?? "红楼梦";
-const domain = argVal("domain") ?? DOMAIN.EX; // 默认外部知识库；--domain=my 我的作品
-const chapterArgs = argVal("chapter");
-const doAll = args.includes("--all");
-const fromN = argVal("from") ? Number(argVal("from")) : null; // --from=N: 从第 N 章建到清单末尾
-const chapters = doAll ? null : (chapterArgs ? chapterArgs.split(",").map(Number) : null);
-
-const CORPUS_PATH = path.join(corpusDir, `${corpusName}-语料.txt`);
-// 按语料名查找专属清单，不存在则回退通用清单
-const LIST_CANDIDATES = [
-  path.join(corpusDir, `${corpusName}-章节清单.csv`),
-  path.join(corpusDir, "章节清单.csv"),
-];
-const LIST_PATH = LIST_CANDIDATES.find((p) => fs.existsSync(p));
-// 项目根（域感知）：--domain 指定域；缺省自动探测两域（同名已禁止）
-const PROJECT_DIR = (() => {
-  try {
-    return projectRoot(corpusName, domain);
-  } catch {
-    // 未建库：创建项目目录（禁止同名检查在 createProject 内）
-    return createProject(corpusName, domain);
-  }
-})();
-
+// ---------- 解析参数（移入 main，支持 SEA 分发注入 argv） ----------
 function readLines(p) {
   return fs.readFileSync(p, "utf-8").replace(/\r\n/g, "\n").split("\n");
 }
@@ -286,7 +257,38 @@ function gateChapter(chJson) {
 
 /* ================= 主流程 ================= */
 
-async function main() {
+let LIST_PATH = null; // 章节清单路径（模块级 let——readChapterList 等模块级函数引用；main 内赋值）
+
+export async function main(argv = cliArgs()) {
+  // ---------- 解析参数（SEA 分发注入 argv；源码模式默认 process.argv） ----------
+  const args = argv;
+  const argVal = (name) => {
+    const a = args.find((x) => x.startsWith(`--${name}=`));
+    return a ? a.slice(name.length + 3) : null;
+  };
+  const corpusName = argVal("corpus") ?? "红楼梦";
+  const domain = argVal("domain") ?? DOMAIN.EX; // 默认外部知识库；--domain=my 我的作品
+  const chapterArgs = argVal("chapter");
+  const doAll = args.includes("--all");
+  const fromN = argVal("from") ? Number(argVal("from")) : null; // --from=N: 从第 N 章建到清单末尾
+  const chapters = doAll ? null : (chapterArgs ? chapterArgs.split(",").map(Number) : null);
+  const CORPUS_PATH = path.join(corpusDir, `${corpusName}-语料.txt`);
+  // 按语料名查找专属清单，不存在则回退通用清单（LIST_PATH 模块级 let——readChapterList 模块级函数引用）
+  const LIST_CANDIDATES = [
+    path.join(corpusDir, `${corpusName}-章节清单.csv`),
+    path.join(corpusDir, "章节清单.csv"),
+  ];
+  LIST_PATH = LIST_CANDIDATES.find((p) => fs.existsSync(p));
+  // 项目根（域感知）：--domain 指定域；缺省自动探测两域（同名已禁止）
+  const PROJECT_DIR = (() => {
+    try {
+      return projectRoot(corpusName, domain);
+    } catch {
+      // 未建库：创建项目目录（禁止同名检查在 createProject 内）
+      return createProject(corpusName, domain);
+    }
+  })();
+
   // SKILL 按层切片：往返1（sentence）/ 往返2（shot-chapter）各取对应段落，省重复 token
   const skillA = loadSkillSlice("sentence");
   const skillB = loadSkillSlice("shot-chapter");
@@ -455,7 +457,7 @@ async function main() {
 
     // 整章复检（check-chapter，软记录不阻塞）
     try {
-      const out = execFileSync(process.execPath, [path.join(__dirname, "check-chapter.mjs"), corpusName, String(ch.number)], { encoding: "utf-8" });
+      const [rCmd, rArgs, rEnv] = runScriptArgs("novelread/check-chapter.mjs", [corpusName, String(ch.number)]); const out = execFileSync(rCmd, rArgs, { encoding: "utf-8", env: rEnv });
       console.log(out.trim());
       chapterIssues.push(...extractIssues(out, ch.number));
     } catch (e) {
@@ -516,11 +518,9 @@ async function main() {
 }
 
 // 仅直接运行时执行 main
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((err) => {
     console.error("[host] 失败:", err);
     process.exit(1);
   });
 }
-
-export { main };

@@ -27,24 +27,27 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { checkJsonText } from "./verify-json.mjs";
 import { deriveChapter } from "./derive-chapter.mjs";
-import { projectRoot } from "../shared/paths.mjs";
+import { projectRoot, cliArgs, runScriptArgs } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+let args, project, aggregatesMode, ch, dryRun, limit, projectDir, chStr; // 惰性初始化（被 import 时不可有副作用）
 
-const args = process.argv.slice(2);
-const project = args.find((a) => !a.startsWith("--"));
-const aggregatesMode = args.includes("--aggregates");
-const ch = Number(args.find((a) => /^\d+$/.test(a)));
-const dryRun = args.includes("--dry-run");
-const limit = Number((args.find((a) => a.startsWith("--limit=")) ?? "--limit=5").split("=")[1]);
-if (!project || (!Number.isInteger(ch) && !aggregatesMode)) {
-  console.error("用法: node novelread/fix.mjs <project> <章号> [--limit=N] [--dry-run] | <project> --aggregates [--dry-run]");
-  process.exit(2);
+/** 解析 CLI 参数（延迟到 main 调用——被 sea-main import 时无参数，不能执行 projectRoot/exit） */
+function parseArgs() {
+  if (projectDir) return;
+  args = cliArgs(); // SEA 分发兼容（过滤 "run <script>" 前缀）
+  project = args.find((a) => !a.startsWith("--"));
+  aggregatesMode = args.includes("--aggregates");
+  ch = Number(args.find((a) => /^\d+$/.test(a)));
+  dryRun = args.includes("--dry-run");
+  limit = Number((args.find((a) => a.startsWith("--limit=")) ?? "--limit=5").split("=")[1]);
+  if (!project || (!Number.isInteger(ch) && !aggregatesMode)) {
+    console.error("用法: node novelread/fix.mjs <project> <章号> [--limit=N] [--dry-run] | <project> --aggregates [--dry-run]");
+    process.exit(2);
+  }
+  projectDir = projectRoot(project); // 域感知：两域自动探测
+  chStr = aggregatesMode ? "" : String(ch).padStart(4, "0");
 }
-
-const projectDir = projectRoot(project); // 域感知：两域自动探测
-const chStr = aggregatesMode ? "" : String(ch).padStart(4, "0");
 
 /* ---------- 枚举（对齐 specs 契约） ---------- */
 const SHOT_TYPES = ["信息", "对话", "心理", "动作", "事件", "环境"];
@@ -68,6 +71,8 @@ function push(rel, loc, problem, current, context) {
   issues.push({ file: rel, loc, problem, current, context: context ?? "" });
 }
 
+export async function main() {
+  parseArgs(); // 惰性解析 CLI 参数
 /* ---------- 聚合层字段级检测（--aggregates 模式：event.json / 卷纲.json 的枚举/类型） ---------- */
 const aggIssues = [];
 if (aggregatesMode) {
@@ -309,7 +314,7 @@ async function finalizeChapter() {
   console.log("\n[fix] 复检（check-chapter）...");
   let chapterOk = false;
   try {
-    const out = execFileSync(process.execPath, [path.join(__dirname, "check-chapter.mjs"), project, String(ch)], { encoding: "utf-8" });
+    const [rCmd, rArgs, rEnv] = runScriptArgs("novelread/check-chapter.mjs", [project, String(ch)]); const out = execFileSync(rCmd, rArgs, { encoding: "utf-8", env: rEnv });
     console.log(out.trim());
     chapterOk = out.includes("✅ 第") && !out.includes("✗");
   } catch (e) {
@@ -318,7 +323,7 @@ async function finalizeChapter() {
 
   console.log("\n[fix] 终检（aggregates --finalize-only，刷新 project-meta.json）...");
   try {
-    const out = execFileSync(process.execPath, [path.join(__dirname, "aggregates.mjs"), project, "--finalize-only"], { encoding: "utf-8" });
+    const [rCmd, rArgs, rEnv] = runScriptArgs("novelread/aggregates.mjs", [project, "--finalize-only"]); const out = execFileSync(rCmd, rArgs, { encoding: "utf-8", env: rEnv });
     console.log(out.trim());
   } catch (e) {
     console.log((e.stdout ?? "").toString().trim());
@@ -329,7 +334,6 @@ async function finalizeChapter() {
   process.exit(chapterOk ? 0 : 1);
 }
 
-async function main() {
   // 聚合层模式（--aggregates）：event.json / 卷纲.json 字段级修复
   if (aggregatesMode) {
     console.log(`\n========== 修错脚本（聚合层字段级）：${project} ==========`);
@@ -397,7 +401,7 @@ async function main() {
     // 终检（聚合层修复后刷新头文档；无章级派生）
     console.log("\n[fix] 终检（aggregates --finalize-only，刷新 project-meta.json）...");
     try {
-      const out = execFileSync(process.execPath, [path.join(__dirname, "aggregates.mjs"), project, "--finalize-only"], { encoding: "utf-8" });
+      const [rCmd, rArgs, rEnv] = runScriptArgs("novelread/aggregates.mjs", [project, "--finalize-only"]); const out = execFileSync(rCmd, rArgs, { encoding: "utf-8", env: rEnv });
       console.log(out.trim());
     } catch (e) {
       console.log((e.stdout ?? "").toString().trim());
@@ -497,4 +501,8 @@ async function main() {
   // T3 + 复检 + 终检（共用收尾）
   await finalizeChapter();
 }
-main().catch((err) => { console.error("[fix] 失败:", err.message); process.exit(1); });
+
+// 直接运行（源码 CLI / SEA 分发调用 export main）——被 import 时仅当直接运行才执行
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => { console.error("[fix] 失败:", err.message); process.exit(1); });
+}

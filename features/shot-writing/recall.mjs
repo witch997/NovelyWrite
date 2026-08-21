@@ -20,61 +20,66 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT, storeDir, projectRoot, listProjects } from "../../shared/paths.mjs";
+import { CODE_ROOT, storeDir, projectRoot, listProjects, writingSessionDir, cliArgs } from "../../shared/paths.mjs";
+import { retrieve } from "../../retriever/retriever.mjs"; // 静态 import（SEA blob 只含静态依赖）
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const sessionsDir = path.join(__dirname, "sessions");
+const sessionsDir = writingSessionDir; // 数据根 sessions/（SEA 只读区不可写）
 
-/* ---------- 参数 ---------- */
-const args = process.argv.slice(2);
-function argVal(name) {
-  const a = args.find((x) => x.startsWith(`--${name}=`));
-  if (a) return a.slice(name.length + 3);
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
-}
-const sessionId = argVal("session");
-const topk = Number(argVal("topk") ?? "6");
-if (!sessionId) {
-  console.error('用法: node features/shot-writing/recall.mjs --session <session-id> [--project=书A,书B] [--topk 6]\n  不传 --project = 跨书全库召回（label 跨书噪声 + token/vec 全库）');
-  process.exit(2);
-}
+let args, sessionId, topk; // 惰性初始化（被 import 时不可 exit）
 
-// 参考源：--project 支持逗号分隔多书 / 多次传入；解析为数组（空 = 全库）
-const rawProjects = [];
-for (const a of args) {
-  if (a.startsWith("--project=")) rawProjects.push(...a.slice("--project=".length).split(",").map((s) => s.trim()).filter(Boolean));
-}
-{
-  const i = args.indexOf("--project");
-  while (i >= 0 && i + 1 < args.length && !args[i + 1].startsWith("--")) {
-    const v = args[i + 1];
-    if (!v.startsWith("--")) rawProjects.push(...v.split(",").map((s) => s.trim()).filter(Boolean));
-    break;
+/* ---------- 参数（延迟到 main——被 sea-main import 时无参数，不能 exit） ---------- */
+function parseArgs() {
+  if (sessionId) return;
+  args = cliArgs(); // SEA 分发兼容（过滤 "run <script>" 前缀）
+  const argVal = (name) => {
+    const a = args.find((x) => x.startsWith(`--${name}=`));
+    if (a) return a.slice(name.length + 3);
+    const i = args.indexOf(`--${name}`);
+    return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
+  };
+  sessionId = argVal("session");
+  topk = Number(argVal("topk") ?? "6");
+  if (!sessionId) {
+    console.error('用法: node features/shot-writing/recall.mjs --session <session-id> [--project=书A,书B] [--topk 6]\n  不传 --project = 跨书全库召回（label 跨书噪声 + token/vec 全库）');
+    process.exit(2);
   }
 }
-// 去重 + 存在性校验（两域任一有即合法；不存在的书剔除并警告）
-const allBooks = new Set(listProjects());
-const unknown = rawProjects.filter((p) => !allBooks.has(p));
-for (const p of new Set(unknown)) console.warn(`  ⚠ 参考书不存在（已忽略）: ${p}（可用: ${[...allBooks].join(" / ")}）`);
-const projects = [...new Set(rawProjects)].filter((p) => allBooks.has(p));
 
-/* ---------- 读 shots.json（preprocess 产物） ---------- */
-const sessionDir = path.join(sessionsDir, sessionId);
-const shotsPath = path.join(sessionDir, "shots.json");
-if (!fs.existsSync(shotsPath)) {
-  console.error(`[recall] shots.json 不存在: ${shotsPath}（先跑 preprocess）`);
-  process.exit(1);
-}
-const { summary, shots } = JSON.parse(fs.readFileSync(shotsPath, "utf-8"));
-console.log(`[recall] 会话 ${sessionId} | 分镜需求 ${shots.length} 镜 | 召回源: ${projects.length ? projects.join(" + ") : "全库（跨书）"}（topk=${topk}）`);
+/* ================= 主流程 ================= */
+export async function main() {
+  parseArgs(); // 惰性解析 CLI 参数（SEA 分发时 main 无参）
+  // 参考源：--project 支持逗号分隔多书 / 多次传入；解析为数组（空 = 全库）
+  const rawProjects = [];
+  for (const a of args) {
+    if (a.startsWith("--project=")) rawProjects.push(...a.slice("--project=".length).split(",").map((s) => s.trim()).filter(Boolean));
+  }
+  {
+    const i = args.indexOf("--project");
+    while (i >= 0 && i + 1 < args.length && !args[i + 1].startsWith("--")) {
+      const v = args[i + 1];
+      if (!v.startsWith("--")) rawProjects.push(...v.split(",").map((s) => s.trim()).filter(Boolean));
+      break;
+    }
+  }
+  // 去重 + 存在性校验（两域任一有即合法；不存在的书剔除并警告）
+  const allBooks = new Set(listProjects());
+  const unknown = rawProjects.filter((p) => !allBooks.has(p));
+  for (const p of new Set(unknown)) console.warn(`  ⚠ 参考书不存在（已忽略）: ${p}（可用: ${[...allBooks].join(" / ")}）`);
+  const projects = [...new Set(rawProjects)].filter((p) => allBooks.has(p));
 
-/* ---------- 检索器（retriever 三通道） ---------- */
-const { pathToFileURL } = await import("node:url");
-const { retrieve } = await import(pathToFileURL(path.join(CODE_ROOT, "retriever", "retriever.mjs")).href);
+  /* ---------- 读 shots.json（preprocess 产物） ---------- */
+  const sessionDir = path.join(sessionsDir, sessionId);
+  const shotsPath = path.join(sessionDir, "shots.json");
+  if (!fs.existsSync(shotsPath)) {
+    console.error(`[recall] shots.json 不存在: ${shotsPath}（先跑 preprocess）`);
+    process.exit(1);
+  }
+  const { summary, shots } = JSON.parse(fs.readFileSync(shotsPath, "utf-8"));
+  console.log(`[recall] 会话 ${sessionId} | 分镜需求 ${shots.length} 镜 | 召回源: ${projects.length ? projects.join(" + ") : "全库（跨书）"}（topk=${topk}）`);
 
-/** 回源：按分镜所属 project 定位句子文件（跨书回源必须用 hit 自带的 project；域感知） */
-function resolveText(shot) {
+  /** 回源：按分镜所属 project 定位句子文件（跨书回源必须用 hit 自带的 project；域感知） */
+  function resolveText(shot) {
   try {
     const proj = shot.project; // retriever hit.shot 带 project 字段（跨书各镜来源不同）
     if (!proj) return null;
@@ -130,4 +135,10 @@ const recallsJson = {
   shots: recalls,
 };
 fs.writeFileSync(path.join(sessionDir, "recalls.json"), JSON.stringify(recallsJson, null, 2) + "\n", "utf-8");
-console.log(`\n✅ recalls.json 已生成: features/shot-writing/sessions/${sessionId}/recalls.json（${recalls.length} 镜，含完整 shots + refs）`);
+console.log(`\n✅ recalls.json 已生成: ${sessionsDir}/${sessionId}/recalls.json（${recalls.length} 镜，含完整 shots + refs）`);
+}
+
+// 直接运行（源码 CLI / SEA 分发调用 export main）
+if (process.argv[1] && path.resolve(process.argv[1]).endsWith(".mjs") && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => { console.error("[recall] 失败:", err.message); process.exit(1); });
+}
