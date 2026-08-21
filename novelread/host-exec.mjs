@@ -342,7 +342,38 @@ export async function main(argv = cliArgs()) {
     }
   }
 
-  for (const ch of todo) {
+  /* ---- pending.json（未完成章记录：失败章 → 下次任务提示/补跑） ---- */
+  const PENDING_FILE = path.join(PROJECT_DIR, "pending.json");
+  function readPending() {
+    try { return JSON.parse(fs.readFileSync(PENDING_FILE, "utf-8")); } catch { return { updatedAt: null, pending: [] }; }
+  }
+  function recordPending(ch, reason) {
+    const p = readPending();
+    p.updatedAt = new Date().toISOString();
+    const ex = p.pending.find((x) => x.chapter === ch.number);
+    if (ex) { ex.reason = reason; ex.attempts = (ex.attempts ?? 0) + 1; ex.fixed = false; }
+    else p.pending.push({ chapter: ch.number, reason, attempts: 1, fixed: false });
+    fs.writeFileSync(PENDING_FILE, JSON.stringify(p, null, 2), "utf-8");
+  }
+  function clearPending(ch) {
+    const p = readPending();
+    const before = p.pending.length;
+    p.pending = p.pending.filter((x) => x.chapter !== ch.number);
+    if (p.pending.length !== before) { p.updatedAt = new Date().toISOString(); fs.writeFileSync(PENDING_FILE, JSON.stringify(p, null, 2), "utf-8"); }
+  }
+  // 本批启动时提示未完成章（上次失败遗留）
+  {
+    const pend = readPending();
+    const todoNums = new Set(todo.map((c) => c.number));
+    const stale = pend.pending.filter((x) => !todoNums.has(x.chapter)); // 本次未覆盖的遗留
+    if (stale.length) {
+      console.log(`\n⚠ 检测到 ${stale.length} 章上次未完成（pending.json）: ${stale.map((x) => `第${x.chapter}章`).join("、")}`);
+      console.log(`  本次任务未覆盖这些章——可 --all 或 --chapter=${stale.map((x) => x.chapter).join(",")} 补跑\n`);
+    }
+  }
+
+  /** 单章处理（往返1+2+派生+复检）；失败返回 {ok:false, issue} */
+  async function runChapter(ch) {
     console.log(`\n========== [host] 第${ch.number}章《${ch.title}》（语料行 ${ch.start}-${ch.end}）==========`);
     const text = corpusLines.slice(ch.start, ch.end).join("\n"); // 正文（跳过标题行）
     console.log(`[host] 本章语料 ${text.length} 字符`);
@@ -372,22 +403,20 @@ export async function main(argv = cliArgs()) {
       "输出格式：一个 JSON 对象，键 = project 内相对路径（用 \"/\"），值 = 该文件完整内容。只输出这个 JSON。",
     ].join("\n");
     const r1 = await callLlm(userA, ch, skillA);
-    if (!r1) { chapterIssues.push(`第${ch.number}章 往返1 解析失败`); continue; }
+    if (!r1) return { ok: false, issue: "往返1 解析失败" };
     const sentKey = Object.keys(r1.payload).find((k) => k.includes("句子标注") && k.endsWith(".json"));
     if (!sentKey) {
       console.error(`[往返1✗] 缺句子 JSON，实际键: ${Object.keys(r1.payload).join(", ")}`);
-      chapterIssues.push(`第${ch.number}章 往返1 缺句子 JSON`);
-      continue;
+      return { ok: false, issue: "往返1 缺句子 JSON" };
     }
     let sentData = typeof r1.payload[sentKey] === "string" ? r1.payload[sentKey] : JSON.stringify(r1.payload[sentKey], null, 2);
     const gvA = checkJsonText(sentData);
-    if (!gvA.ok) { console.error(`[往返1 gate✗] 句子语法非法: ${gvA.kind} @行${gvA.line}`); chapterIssues.push(`第${ch.number}章 往返1 句子语法非法`); continue; }
+    if (!gvA.ok) { console.error(`[往返1 gate✗] 句子语法非法: ${gvA.kind} @行${gvA.line}`); return { ok: false, issue: "往返1 句子语法非法" }; }
     const sentJson = JSON.parse(sentData);
     const gA = gateSentences(sentJson);
     if (!gA.ok) {
       console.error(`[硬闸门A✗] ${gA.issues.join("; ")} → 本章跳过（不执行往返2）`);
-      chapterIssues.push(`第${ch.number}章 往返1 句子层校验失败: ${gA.issues.join("; ")}`);
-      continue;
+      return { ok: false, issue: `往返1 句子层校验失败: ${gA.issues.join("; ")}` };
     }
     // 文件名规范化：宿主决定标准路径（第XXXX章.json 4位零填充），不信任 LLM 输出的键
     const sentPath = `句子标注/json/第${String(ch.number).padStart(4, "0")}章.json`;
@@ -415,21 +444,19 @@ export async function main(argv = cliArgs()) {
       "输出格式：一个 JSON 对象，键 = project 内相对路径（用 \"/\"），值 = 该文件完整内容。只输出这个 JSON。",
     ].join("\n");
     const r2 = await callLlm(userB, ch, skillB);
-    if (!r2) { chapterIssues.push(`第${ch.number}章 往返2 解析失败`); continue; }
+    if (!r2) return { ok: false, issue: "往返2 解析失败" };
     const shotKey = Object.keys(r2.payload).find((k) => k.includes("分镜标注") && k.endsWith(".json"));
     const chKey = Object.keys(r2.payload).find((k) => k.startsWith("章节/") && k.endsWith(".json") && !k.endsWith("章节表.json"));
     if (!shotKey || !chKey) {
       console.error(`[往返2✗] 缺分镜/章节 JSON，实际键: ${Object.keys(r2.payload).join(", ")}`);
-      chapterIssues.push(`第${ch.number}章 往返2 缺分镜/章节`);
-      continue;
+      return { ok: false, issue: "往返2 缺分镜/章节" };
     }
     let shotData = typeof r2.payload[shotKey] === "string" ? r2.payload[shotKey] : JSON.stringify(r2.payload[shotKey], null, 2);
     let chData = typeof r2.payload[chKey] === "string" ? r2.payload[chKey] : JSON.stringify(r2.payload[chKey], null, 2);
     const gvB1 = checkJsonText(shotData), gvB2 = checkJsonText(chData);
     if (!gvB1.ok || !gvB2.ok) {
       console.error(`[往返2 gate✗] 分镜/章节语法非法: ${gvB1.ok ? "" : gvB1.kind} / ${gvB2.ok ? "" : gvB2.kind}`);
-      chapterIssues.push(`第${ch.number}章 往返2 分镜/章节语法非法`);
-      continue;
+      return { ok: false, issue: "往返2 分镜/章节语法非法" };
     }
     const shotJson = JSON.parse(shotData), chJson = JSON.parse(chData);
     const gB = [...gateShots(shotJson, sentJson).issues, ...gateChapter(chJson).issues];
@@ -440,8 +467,7 @@ export async function main(argv = cliArgs()) {
         fs.writeFileSync(path.join(CODE_ROOT, "novelread", "state", `raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}-round2.txt`), r2.raw, "utf-8");
         console.log(`  [留档] raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}-round2.txt`);
       } catch { /* 留档失败不阻塞 */ }
-      chapterIssues.push(`第${ch.number}章 往返2 校验失败: ${gB.join("; ")}`);
-      continue;
+      return { ok: false, issue: `往返2 校验失败: ${gB.join("; ")}` };
     }
     // 文件名规范化：宿主决定标准路径（第XXXX章.json 4位零填充），不信任 LLM 输出的键
     const shotPath = `分镜标注/json/第${String(ch.number).padStart(4, "0")}章.json`;
@@ -472,6 +498,41 @@ export async function main(argv = cliArgs()) {
     const rawP = path.join(CODE_ROOT, "novelread", "state", `raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}.txt`);
     if (fs.existsSync(rawP)) { fs.unlinkSync(rawP); console.log(`  [清理] 删除过期留档 ${path.basename(rawP)}`); }
     console.log(`[host] 第${ch.number}章完成`);
+    return { ok: true, issue: null };
+  }
+
+  /* ===== 主循环：失败自动重跑 1 次 → 仍失败自动 fix + pending 记录；失败率 >30% 熔断 ===== */
+  const totalChapters = todo.length;
+  let processedCh = 0, failedCh = 0;
+  for (const ch of todo) {
+    processedCh++;
+    const fuse = failedCh / processedCh > 0.3; // 熔断：已处理章失败率 >30% → 停止自动重跑/fix
+    let result = await runChapter(ch);
+    if (!result.ok && !fuse) {
+      console.log(`\n[host] ⚠ 第${ch.number}章失败（${result.issue.slice(0, 50)}），自动重跑第 2 次...`);
+      result = await runChapter(ch);
+    }
+    if (!result.ok) {
+      failedCh++;
+      // 自动 fix（分镜/章节文件已落盘才跑——文件缺失时 fix 无下手处）
+      const pad = String(ch.number).padStart(4, "0");
+      const hasShots = fs.existsSync(path.join(PROJECT_DIR, `分镜标注/json/第${pad}章.json`));
+      const hasChap = fs.existsSync(path.join(PROJECT_DIR, `章节/第${pad}章.json`));
+      if (hasShots && hasChap && !fuse) {
+        console.log(`\n[host] 自动跑 fix 修复第${ch.number}章（字段级，含 LLM 补丁）...`);
+        try {
+          const [cmd, cmdArgs, cmdEnv] = runScriptArgs("novelread/fix.mjs", [corpusName, String(ch.number)]);
+          const out = execFileSync(cmd, cmdArgs, { encoding: "utf-8", env: cmdEnv, timeout: 180000 });
+          console.log(out.trim().slice(-800));
+        } catch (e) {
+          console.log((e.stdout ?? "").toString().slice(-400) || `[fix✗] ${e.message}`);
+        }
+      }
+      recordPending(ch, result.issue);
+      chapterIssues.push(`第${ch.number}章 ${result.issue}（${fuse ? "熔断,未重试" : "已重试1次" + (hasShots && hasChap ? "+fix" : "")}）`);
+    } else {
+      clearPending(ch); // 成功 → 从 pending 移除
+    }
   }
 
   console.log("\n[host] 全部完成。产出文件：");

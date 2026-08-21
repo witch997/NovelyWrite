@@ -221,6 +221,8 @@ body {
 .ref-pool-item:hover { border-color: var(--border-strong); }
 .ref-pool-item input { accent-color: var(--brand); cursor: pointer; }
 .ref-pool-item:has(input:checked) { border-color: var(--brand); background: var(--bg-active); }
+.ref-pool-item.has-pending { border-color: var(--amber-500); color: var(--amber-500); }
+.ref-pool-item.has-pending span { color: var(--amber-500); }
 .ai-result { padding: 12px; }
 .shot-card {
   background: var(--bg-base); border: 1px solid var(--border);

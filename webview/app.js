@@ -332,10 +332,11 @@
       if (!list.length) { box.innerHTML = '<span class="muted">无已建库项目(先 annotate 建库)</span>'; return; }
       box.innerHTML = "";
       for (const p of list) {
-        const label = `${p.name}（${p.domain === "my" ? "我的" : "外部"}${p.meta?.chaptersAnnotated ? ` ${p.meta.chaptersAnnotated}章` : ""}）`;
+        const pendN = (p.pending || []).length;
+        const label = `${p.name}（${p.domain === "my" ? "我的" : "外部"}${p.meta?.chaptersAnnotated ? ` ${p.meta.chaptersAnnotated}章` : ""}${pendN ? ` ⚠缺${pendN}章` : ""}）`;
         refPool.set(p.name, { checked: false, domain: p.domain });
         const item = document.createElement("label");
-        item.className = "ref-pool-item";
+        item.className = "ref-pool-item" + (pendN ? " has-pending" : "");
         item.innerHTML = `<input type="checkbox" data-book="${escapeHtml(p.name)}"> <span>${escapeHtml(label)}</span>`;
         item.querySelector("input").addEventListener("change", (e) => {
           const b = refPool.get(p.name);

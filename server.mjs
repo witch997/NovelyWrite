@@ -127,12 +127,13 @@ function listTasks() {
 
 /* ================= API 实现 ================= */
 
-/** 项目列表（两域 + 进度） */
+/** 项目列表（两域 + 进度 + pending 未完成章提示） */
 function apiProjects() {
   const out = [];
   for (const project of listProjects()) {
     const domain = domainOf(project);
     const meta = readJsonSafe(path.join(projectRoot(project), "project-meta.json"));
+    const pending = readJsonSafe(path.join(projectRoot(project), "pending.json"));
     out.push({
       name: project,
       domain,
@@ -148,19 +149,21 @@ function apiProjects() {
             verifiedAt: meta.verify?.verifiedAt ?? null,
           }
         : null,
+      pending: pending?.pending?.length ? pending.pending : [], // 未完成章（失败记录，下次任务补跑）
     });
   }
   return { projects: out };
 }
 
-/** 项目详情（meta + 章节表 + 事件 + 卷纲） */
+/** 项目详情（meta + 章节表 + 事件 + 卷纲 + pending） */
 function apiProjectDetail(name) {
   const root = projectRoot(name);
   const meta = readJsonSafe(path.join(root, "project-meta.json"));
   const chapterTable = readJsonSafe(path.join(root, "章节", "章节表.json"));
   const events = readJsonSafe(path.join(root, "大事件", "event.json"));
   const volumes = readJsonSafe(path.join(root, "卷纲", "volume.json"));
-  return { project: name, domain: domainOf(name), meta, chapterTable, events, volumes };
+  const pending = readJsonSafe(path.join(root, "pending.json"));
+  return { project: name, domain: domainOf(name), meta, chapterTable, events, volumes, pending: pending?.pending ?? [] };
 }
 
 /** 单章三层（句子/分镜/章节标注）+ 语料分章 */
