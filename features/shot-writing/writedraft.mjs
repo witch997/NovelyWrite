@@ -39,7 +39,7 @@ import { loadChatConfig } from "../../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sessionsDir = path.join(__dirname, "sessions");
-const outputDir = path.join(CODE_ROOT, "output");
+const outputDir = path.join(CODE_ROOT, "output", sessionId); // 最终稿按会话归档: output/<sessionId>/
 
 /* ---------- 参数 ---------- */
 const args = process.argv.slice(2);
@@ -364,7 +364,7 @@ if (testMode) {
   fs.writeFileSync(path.join(outputDir, finalName), finalText, "utf-8");
   console.log(`\n✅ 最终稿已生成（测试模式，未整合）:`);
   console.log(`   中间产物: features/shot-writing/sessions/${sessionId}/${draftName}（带标签，会话存档）`);
-  console.log(`   最终稿:   NovelyWrite/output/${finalName}（测试模式：分镜直接拼接，含标签）`);
+  console.log(`   最终稿:   NovelyWrite/output/${sessionId}/${finalName}（测试模式：分镜直接拼接，含标签）`);
   console.log(`\n=== 最终稿预览 ===`);
   console.log(finalText.slice(0, 600) + (finalText.length > 600 ? "\n…" : ""));
   process.exit(0);
@@ -404,6 +404,6 @@ const finalName = `${project}.final.txt`; // <项目名>.final.txt（最终整�
 fs.writeFileSync(path.join(outputDir, finalName), finalOut, "utf-8");
 console.log(`\n✅ 最终稿已生成:`);
 console.log(`   中间产物: features/shot-writing/sessions/${sessionId}/${draftName}（带标签，会话存档）`);
-console.log(`   最终稿:   NovelyWrite/output/${finalName}（纯正文，用户可读）`);
+console.log(`   最终稿:   NovelyWrite/output/${sessionId}/${finalName}（纯正文，用户可读）`);
 console.log(`\n=== 最终稿预览 ===`);
 console.log(finalOut.slice(0, 600) + (finalOut.length > 600 ? "\n…" : ""));

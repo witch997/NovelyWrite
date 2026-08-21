@@ -404,16 +404,16 @@ function apiSessionDetail(id) {
   return { id, input, meta, shots, recalls, drafts };
 }
 
-/** 会话最终成稿：读 output/<项目名>.final.txt（纯正文，无分镜标签）
- *  项目名从会话目录的 <项目名>draft.txt 推导；final 在 output/ 下。 */
+/** 会话最终成稿：读 output/<sessionId>/<项目名>.final.txt（按会话归档，纯正文，无分镜标签）
+ *  项目名从会话目录的 <项目名>draft.txt 推导。 */
 function apiSessionFinal(id) {
   const dir = path.join(CODE_ROOT, "features", "shot-writing", "sessions", id);
   if (!fs.existsSync(dir)) throw new NovelyError("NOT_FOUND", { context: { id, kind: "session" } });
   const draftFile = fs.readdirSync(dir).find((f) => f.endsWith("draft.txt"));
   const project = draftFile ? draftFile.replace(/draft\.txt$/, "") : null;
   if (!project) return { ok: false, reason: "会话无 draft（尚未写作）" };
-  const finalPath = path.join(CODE_ROOT, "output", `${project}.final.txt`);
-  if (!fs.existsSync(finalPath)) return { ok: false, reason: `final 不存在: output/${project}.final.txt` };
+  const finalPath = path.join(CODE_ROOT, "output", id, `${project}.final.txt`);
+  if (!fs.existsSync(finalPath)) return { ok: false, reason: `final 不存在: output/${id}/${project}.final.txt` };
   return { ok: true, project, file: `${project}.final.txt`, content: fs.readFileSync(finalPath, "utf-8") };
 }
 
