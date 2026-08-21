@@ -548,12 +548,14 @@ async function apiImportBook(body) {
   });
   // 3. 启动建库任务
   const from = Number(body.from);
+  const to = Number(body.to);
   const taskArgs = { project: base, domain: DOMAIN.EX };
   if (body.pending) taskArgs.pending = true; // 补建指令：只补 pending 缺章
-  else if (from > 0) taskArgs.from = from;
+  else if (from > 0) { taskArgs.from = from; if (to > 0) taskArgs.to = to; } // 续建范围
   else taskArgs.all = true;
   const taskId = startTask("novelread/host-exec.mjs", taskArgsFor("annotate", taskArgs), "annotate");
-  return { ok: true, name: base, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: from > 0 ? `from-${from}` : "all" };
+  const modeDesc = body.pending ? "补建缺章" : from > 0 ? `从第${from}章续建${to > 0 ? `到第${to}章` : "到末尾"}` : "全量";
+  return { ok: true, name: base, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: modeDesc };
 }
 
 /* ================= 路由 ================= */
@@ -603,7 +605,10 @@ function taskArgsFor(kind, b) {
       if (b.all) a.push("--all");
       else if (b.chapter) a.push(...String(b.chapter).split(",").map((n) => `--chapter=${n.trim()}`));
       else if (b.pending) a.push("--pending"); // 补建指令：只补 pending 缺章
-      else if (b.from) a.push(`--from=${Number(b.from)}`); // 从第 N 章建到清单末尾
+      else if (b.from) {
+        a.push(`--from=${Number(b.from)}`); // 从第 N 章起
+        if (b.to) a.push(`--to=${Number(b.to)}`); // 续建终点（默认到末尾）
+      }
       else throw new NovelyError("ARG_REQUIRED", { context: { field: "all|chapter|from" } });
       break;
     case "aggregate":

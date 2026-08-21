@@ -364,34 +364,41 @@
     const file = e.target.files?.[0];
     if (!file) return;
     const base = file.name.replace(/\.txt$/i, "").replace(/-语料$/, "").trim();
-    // 查已建库进度（同名项目最后一章，作起始章默认值）
+    // 查已建库进度（同名项目已标注章数 = 续建起点）
     let lastCh = 0;
     try {
       const d = await api("/api/projects");
       lastCh = (d.projects || []).find((p) => p.name === base)?.meta?.chaptersAnnotated || 0;
     } catch { /* 查不到按 0 */ }
-    const hint = lastCh > 0 ? `已建库至第 ${lastCh} 章` : "尚未建库";
-    const fromStr = prompt(
+    const startCh = lastCh + 1; // 续建从最新章节的下一章开始
+    const defEnd = startCh + 29; // 默认一次续建 30 章（推荐单批上限）
+    const hint = lastCh > 0 ? `已建库至第 ${lastCh} 章，将从第 ${startCh} 章续建` : "尚未建库，将从第 1 章开始";
+    const endStr = prompt(
       `导入《${base}》——选择建库范围（${hint}）\n\n` +
-      `· 输入 0 = 全量建库（从头开始）\n` +
-      `· 输入 N = 从第 N 章建到末尾（续建用）\n` +
+      `· 输入终点章号 N = 从第 ${startCh} 章续建到第 N 章（推荐每次 ≤30 章）\n` +
+      `· 输入 0 = 全量建库（⚠ 从头建全书，一次开销很大，不推荐）\n` +
       `· 输入 p = 补建指令（只补上次未完成的缺章）\n\n` +
-      `默认起始章号：`,
-      String(lastCh || 0)
+      `默认终点章号：`,
+      String(defEnd)
     );
-    if (fromStr === null) return; // 取消
+    if (endStr === null) return; // 取消
     const body = { filename: file.name, content: await file.text() };
-    if (String(fromStr).toLowerCase() === "p") {
+    const s = String(endStr).trim().toLowerCase();
+    if (s === "p") {
       body.pending = true; // 补建指令
+    } else if (s === "0") {
+      body.from = 0; // 全量（服务器端转 --all）
     } else {
-      const from = parseInt(fromStr, 10);
-      if (!Number.isFinite(from) || from < 0) { toast("章号非法，已取消"); return; }
-      body.from = from;
+      const end = parseInt(s, 10);
+      if (!Number.isFinite(end) || end < startCh) { toast(`终点章号需 ≥ ${startCh}，已取消`); return; }
+      body.from = startCh; // 从最新章节之后续建
+      body.to = end;       // 到指定终点章
     }
     toast(`正在导入《${base}》并生成章节清单…`);
     try {
       const r = await api("/api/tasks/import-book", { method: "POST", body: JSON.stringify(body) });
-      toast(`✅ 已开始建库《${r.name}》（${body.pending ? "补建缺章" : r.mode === "all" ? "全量" : `从第${body.from}章到末尾`}）`);
+      const modeDesc = body.pending ? "补建缺章" : body.to ? `续建第${body.from}~${body.to}章` : r.mode;
+      toast(`✅ 已开始建库《${r.name}》（${modeDesc}）`);
       await loadRefPool(); // 刷新参考书池
     } catch (err) {
       toast(`导入失败: ${err.message}`);

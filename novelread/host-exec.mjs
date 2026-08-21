@@ -271,7 +271,8 @@ export async function main(argv = cliArgs()) {
   const chapterArgs = argVal("chapter");
   const doAll = args.includes("--all");
   const pendingOnly = args.includes("--pending"); // 补建指令：只跑 pending.json 里未完成的章
-  const fromN = argVal("from") ? Number(argVal("from")) : null; // --from=N: 从第 N 章建到清单末尾
+  const fromN = argVal("from") ? Number(argVal("from")) : null; // --from=N: 从第 N 章开始
+  const toN = argVal("to") ? Number(argVal("to")) : null;       // --to=M: 到第 M 章结束(与 --from 组合=续建范围)
   const chapters = doAll ? null : (chapterArgs ? chapterArgs.split(",").map(Number) : null);
   chatCfg = loadChatConfig(); // 惰性读配置（main 调用时——被 import 时不可读，全新目录无 config 会炸）
   baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
@@ -316,11 +317,14 @@ export async function main(argv = cliArgs()) {
     ? list
     : list.filter((c) => {
         if (chapters) return chapters.includes(c.number);
-        if (fromN) return c.number >= fromN; // --from=N：从第 N 章建到清单末尾
+        if (fromN) return c.number >= fromN && (!toN || c.number <= toN); // --from=N --to=M：续建范围
         if (pendingOnly) return pendingNums.includes(c.number); // --pending：只补未完成章
         return false;
       });
-  if (!todo.length) throw new Error(`没有要处理的章: ${pendingOnly ? `pending 无未完成章（可 --all 全量）` : chapters ? chapters.join(",") : fromN ? `从${fromN}章起` : "all"}`);
+  if (!todo.length) throw new Error(`没有要处理的章: ${pendingOnly ? `pending 无未完成章（可 --all 全量）` : chapters ? chapters.join(",") : fromN ? `从${fromN}章起${toN ? `到${toN}章` : ""}` : "all"}`);
+  // 建库范围提示：全量/大批次开销大，推荐分批（每次 ≤30 章）
+  if (doAll) console.log(`\n⚠ 全量建库（${todo.length} 章）——一次开销较大（LLM token），如非必要建议分批续建（每次 ≤30 章）\n`);
+  else if (todo.length > 30) console.log(`\n⚠ 本次建库 ${todo.length} 章，超过推荐单批上限（30 章）——建议分批以控制开销\n`);
 
   const existing = walkProject(PROJECT_DIR);
   const chapterIssues = [];
