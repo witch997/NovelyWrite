@@ -329,6 +329,48 @@
     return [...refPool.entries()].filter(([, v]) => v.checked).map(([name]) => name);
   }
 
+  /* ================= 导入参考书（选 txt → 选建库范围 → 自动建库） ================= */
+  function importBook() {
+    const input = $("bookFileInput");
+    input.value = "";
+    input.click(); // 打开文件选择器（选语料 txt）
+  }
+
+  async function onBookFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const base = file.name.replace(/\.txt$/i, "").replace(/-语料$/, "").trim();
+    // 查已建库进度（同名项目最后一章，作起始章默认值）
+    let lastCh = 0;
+    try {
+      const d = await api("/api/projects");
+      lastCh = (d.projects || []).find((p) => p.name === base)?.meta?.chaptersAnnotated || 0;
+    } catch { /* 查不到按 0 */ }
+    const hint = lastCh > 0 ? `已建库至第 ${lastCh} 章` : "尚未建库";
+    const fromStr = prompt(
+      `导入《${base}》——选择建库范围（${hint}）\n\n` +
+      `· 输入 0 = 全量建库（从头开始）\n` +
+      `· 输入 N = 从第 N 章建到末尾（续建用）\n\n` +
+      `默认起始章号：`,
+      String(lastCh || 0)
+    );
+    if (fromStr === null) return; // 取消
+    const from = parseInt(fromStr, 10);
+    if (!Number.isFinite(from) || from < 0) { toast("章号非法，已取消"); return; }
+    toast(`正在导入《${base}》并生成章节清单…`);
+    try {
+      const text = await file.text();
+      const r = await api("/api/tasks/import-book", {
+        method: "POST",
+        body: JSON.stringify({ filename: file.name, content: text, from }),
+      });
+      toast(`✅ 已开始建库《${r.name}》（${r.mode === "all" ? "全量" : `从第${from}章到末尾`}）`);
+      await loadRefPool(); // 刷新参考书池
+    } catch (err) {
+      toast(`导入失败: ${err.message}`);
+    }
+  }
+
   /* ================= AI 写作流程 ================= */
   async function startTask(kind, body) {
     const { taskId } = await api(`/api/tasks/${kind}`, { method: "POST", body: JSON.stringify(body) });
@@ -633,6 +675,9 @@
     $("modelSelect").onchange = onModelChange;
     // 成稿区"插入到写作栏"
     window.__insertDraft = insertDraftToEditor;
+    // 导入参考书
+    $("btnImportBook").onclick = importBook;
+    $("bookFileInput").onchange = onBookFile;
     // 设置
     $("btnSettings").onclick = openSettings;
     $("btnSettingsClose").onclick = closeSettings;

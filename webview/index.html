@@ -1,4 +1,4 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -66,7 +66,11 @@
       </div>
       <div class="splitter-h" data-split="aiInput"></div>
       <div class="ai-sec" id="aiRefSec">
-        <div class="ref-pool-title">参考书（勾选 = 只从这些书召回；不选 = 全库跨书）</div>
+        <div class="ref-pool-title">
+          <span>参考书（勾选 = 只从这些书召回；不选 = 全库跨书）</span>
+          <button id="btnImportBook" class="btn btn-sm" title="导入语料 txt 并建库">导入参考书</button>
+        </div>
+        <input type="file" id="bookFileInput" accept=".txt" style="display:none">
         <div id="refPoolList" class="ref-pool-list"><span class="muted">加载中…</span></div>
       </div>
       <div class="splitter-h" data-split="aiRef"></div>

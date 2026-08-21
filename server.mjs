@@ -417,6 +417,44 @@ function apiSessionFinal(id) {
   return { ok: true, project, file: `${project}.final.txt`, content: fs.readFileSync(finalPath, "utf-8") };
 }
 
+/* ================= 导入参考书（上传语料 → 自动分章清单 → 启动建库） ================= */
+const CORPUS_NAME_RE = /^[\u4e00-\u9fa5A-Za-z0-9_·《》（）()]+$/; // 语料名白名单（防路径穿越）
+
+/**
+ * POST /api/tasks/import-book
+ *   { filename: "xxx.txt", content: "…语料全文…", from?: number }
+ * 流程：保存 corpus/<名>-语料.txt → 自动生成章节清单(gen-chapter-list) → 启动 annotate 任务
+ *       from=0/缺省 → --all（全量）；from=N>0 → --from=N（从第 N 章到末尾）
+ */
+async function apiImportBook(body) {
+  const filename = (body?.filename ?? "").trim();
+  const content = body?.content;
+  if (!filename || typeof content !== "string" || !content.trim()) {
+    throw new NovelyError("ARG_REQUIRED", { context: { field: "filename|content" } });
+  }
+  const base = filename.replace(/\.txt$/i, "").replace(/-语料$/, "").trim();
+  if (!base || !CORPUS_NAME_RE.test(base)) {
+    throw new NovelyError("ARG_INVALID", { context: { field: "filename", value: filename, rule: "仅中文/字母/数字等，去 .txt 后缀" } });
+  }
+  // 1. 保存语料
+  fs.mkdirSync(corpusDir, { recursive: true });
+  const corpusPath = path.join(corpusDir, `${base}-语料.txt`);
+  fs.writeFileSync(corpusPath, content, "utf-8");
+  // 2. 自动生成章节清单（spawn，等待完成）
+  await new Promise((resolve, reject) => {
+    const child = spawn(NODE, [path.join(CODE_ROOT, "novelread", "gen-chapter-list.mjs"), base], { cwd: CODE_ROOT, stdio: "ignore" });
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`gen-chapter-list 退出码 ${code}`))));
+  });
+  // 3. 启动建库任务
+  const from = Number(body.from);
+  const taskArgs = { project: base, domain: DOMAIN.EX };
+  if (from > 0) taskArgs.from = from;
+  else taskArgs.all = true;
+  const taskId = startTask("novelread/host-exec.mjs", taskArgsFor("annotate", taskArgs), "annotate");
+  return { ok: true, name: base, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: from > 0 ? `from-${from}` : "all" };
+}
+
 /* ================= 路由 ================= */
 const ROUTES = [
   { m: "GET", p: /^\/api\/projects$/, h: () => apiProjects() },
@@ -448,6 +486,7 @@ const ROUTES = [
   { m: "POST", p: /^\/api\/tasks\/recall$/, h: (_m, b) => ({ taskId: startTask("features/shot-writing/recall.mjs", taskArgsFor("recall", b), "recall") }) },
   { m: "POST", p: /^\/api\/tasks\/writedraft$/, h: (_m, b) => ({ taskId: startTask("features/shot-writing/writedraft.mjs", taskArgsFor("writedraft", b), "writedraft") }) },
   { m: "GET", p: /^\/api\/sessions\/([^/]+)\/final$/, h: (m) => apiSessionFinal(decodeURIComponent(m[1])) },
+  { m: "POST", p: /^\/api\/tasks\/import-book$/, h: (_m, b) => apiImportBook(b) },
 ];
 
 /** 任务参数装配（前端 body → 脚本 CLI 参数） */
@@ -459,7 +498,8 @@ function taskArgsFor(kind, b) {
       a.push(`--corpus=${b.project}`, `--domain=${b.domain ?? DOMAIN.EX}`);
       if (b.all) a.push("--all");
       else if (b.chapter) a.push(...String(b.chapter).split(",").map((n) => `--chapter=${n.trim()}`));
-      else throw new NovelyError("ARG_REQUIRED", { context: { field: "all|chapter" } });
+      else if (b.from) a.push(`--from=${Number(b.from)}`); // 从第 N 章建到清单末尾
+      else throw new NovelyError("ARG_REQUIRED", { context: { field: "all|chapter|from" } });
       break;
     case "aggregate":
       if (!b?.project) throw new NovelyError("ARG_REQUIRED", { context: { field: "project" } });

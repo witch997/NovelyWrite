@@ -208,7 +208,8 @@ body {
 .splitter-h:hover, .splitter-h.dragging { background: var(--brand); opacity: 0.45; }
 
 /* 参考书池(跨书参考源选择,可多选) */
-.ref-pool-title { font-size: 11px; color: var(--label-tertiary); margin-bottom: 7px; }
+.ref-pool-title { font-size: 11px; color: var(--label-tertiary); margin-bottom: 7px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.ref-pool-title .btn { flex-shrink: 0; }
 .ref-pool-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 108px; overflow-y: auto; }
 .ref-pool-item {
   display: inline-flex; align-items: center; gap: 5px;

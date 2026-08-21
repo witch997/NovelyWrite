@@ -139,6 +139,7 @@ const corpusName = argVal("corpus") ?? "红楼梦";
 const domain = argVal("domain") ?? DOMAIN.EX; // 默认外部知识库；--domain=my 我的作品
 const chapterArgs = argVal("chapter");
 const doAll = args.includes("--all");
+const fromN = argVal("from") ? Number(argVal("from")) : null; // --from=N: 从第 N 章建到清单末尾
 const chapters = doAll ? null : (chapterArgs ? chapterArgs.split(",").map(Number) : null);
 
 const CORPUS_PATH = path.join(corpusDir, `${corpusName}-语料.txt`);
@@ -300,8 +301,12 @@ async function main() {
 
   const todo = doAll
     ? list
-    : list.filter((c) => chapters.includes(c.number));
-  if (!todo.length) throw new Error(`没有要处理的章: ${chapters ?? "all"}`);
+    : list.filter((c) => {
+        if (chapters) return chapters.includes(c.number);
+        if (fromN) return c.number >= fromN; // --from=N：从第 N 章到清单末尾
+        return false;
+      });
+  if (!todo.length) throw new Error(`没有要处理的章: ${chapters ? chapters.join(",") : fromN ? `从${fromN}章起` : "all"}`);
 
   const existing = walkProject(PROJECT_DIR);
   const chapterIssues = [];
