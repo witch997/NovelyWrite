@@ -29,6 +29,185 @@
     busy: false,
   };
 
+  /* ================= 浮动任务栏（全局任务进度/报错） =================
+   * 全局轮询 GET /api/tasks（1.5s）→ 每个 running 任务拉 /api/tasks/:id/log
+   * 解析日志尾部启发式进度（annotate: 第X章完成/共N章；AI 链: 阶段行）
+   * 完成→绿自动收起；失败→红驻留（手动关闭）；可最小化成标题条
+   */
+  const taskBar = {
+    el: null, head: null, body: null, count: null, toggle: null,
+    timer: null, minimized: false,
+    cards: new Map(), // taskId → {el, name, status, logEl, barEl, doneAt, failed}
+    done: [],         // 已结束任务快照（失败驻留）
+    init() {
+      this.el = $("taskBar");
+      this.head = $("taskBarHead");
+      this.body = $("taskBarBody");
+      this.count = $("taskBarCount");
+      this.toggle = $("taskBarToggle");
+      if (!this.el) return;
+      this.head.onclick = () => this.toggleMin();
+      this.toggle.onclick = (e) => { e.stopPropagation(); this.toggleMin(); };
+      this.timer = setInterval(() => this.poll(), 1500);
+      this.poll(); // 立即来一轮
+    },
+    toggleMin() {
+      this.minimized = !this.minimized;
+      this.el.classList.toggle("minimized", this.minimized);
+      this.toggle.textContent = this.minimized ? "+" : "–";
+    },
+    /** 渲染任务名（annotate→「建库」,aggregate→「聚合」,preprocess/recall/writedraft→AI 链阶段） */
+    labelOf(t) {
+      const map = {
+        annotate: "📚 建库", aggregate: "🧩 聚合", fix: "🔧 修复",
+        preprocess: "🎬 分镜", recall: "🔍 召回", writedraft: "✍️ 成稿",
+      };
+      const base = map[t.label] ?? t.label ?? "任务";
+      const arg = t.args?.[0] && !t.args[0].startsWith("--") ? t.args[0] : "";
+      return arg ? `${base}《${arg}》` : base;
+    },
+    /** 从日志提取进度: annotate → 完成章/总数；聚合/AI → 阶段百分比 */
+    progressFrom(log) {
+      if (!log?.length) return null;
+      const text = log.join("\n");
+      // annotate: 共 N 章 + 第X章完成
+      const totalM = text.match(/共\s*(\d+)\s*章/);
+      const doneM = [...text.matchAll(/第(\d+)章完成/g)].map((m) => Number(m[1]));
+      if (totalM && doneM.length) {
+        const total = Number(totalM[1]);
+        return { done: Math.max(...doneM), total, pct: Math.round((doneM.length / total) * 100) };
+      }
+      // annotate: 熔断/全部完成 → 100%
+      if (/全部完成|已开始建库/.test(text)) return { done: null, total: null, pct: 99 };
+      // 聚合: 新增章 N 个
+      const incM = text.match(/新增章\s*(\d+)\s*个/);
+      if (incM) return { done: null, total: null, pct: 50 };
+      // AI 链: 阶段行 → 粗略百分比
+      if (/聚合层②|往返2|召回参考|正在写作/.test(text)) return { done: null, total: null, pct: 40 };
+      if (/往返1/.test(text)) return { done: null, total: null, pct: 20 };
+      return null;
+    },
+    /** 从日志尾部取最近一行有效状态（错误优先） */
+    lastLogLine(log) {
+      if (!log?.length) return { text: "", kind: "" };
+      const lines = [...log].reverse();
+      const err = lines.find((l) => /失败|✗|❌|error|Error|异常|拒绝/i.test(l));
+      if (err) return { text: err.slice(0, 120), kind: "error" };
+      const warn = lines.find((l) => /⚠|缺|熔断|pending/i.test(l));
+      if (warn) return { text: warn.slice(0, 120), kind: "warn" };
+      return { text: lines[0].slice(0, 120), kind: "" };
+    },
+    /** 一轮全局轮询 */
+    async poll() {
+      try {
+        const { tasks } = await api("/api/tasks");
+        const running = tasks.filter((t) => t.status === "running");
+        const ids = new Set(tasks.map((t) => t.id));
+        // 清理已从服务端消失的卡（非失败驻留的）
+        for (const [id, card] of this.cards) {
+          if (!ids.has(id) && !card.failed) this.removeCard(id);
+        }
+        for (const t of running) {
+          this.ensureCard(t);
+          this.updateRunning(t); // 刷新进度条 + 最新日志行（不 await，独立请求）
+        }
+        for (const t of tasks.filter((x) => x.status !== "running")) {
+          const card = this.cards.get(t.id);
+          if (card && !card.failed && card.status !== t.status) this.finishCard(t, card);
+        }
+        this.refreshCount();
+        // 无任务且无失败驻留 → 自动隐藏
+        const visible = this.cards.size > 0 || this.done.length > 0;
+        this.el.classList.toggle("visible", visible);
+      } catch { /* 轮询失败忽略（服务器可能重启中） */ }
+    },
+    ensureCard(t) {
+      if (this.cards.has(t.id)) return;
+      const el = document.createElement("div");
+      el.className = "task-card running";
+      el.innerHTML = `
+        <div class="task-card-head">
+          <span class="task-card-name">${escapeHtml(this.labelOf(t))}</span>
+          <span class="task-card-status running">⏳ 进行中</span>
+        </div>
+        <div class="task-card-bar"><div class="task-card-bar-fill" style="width:5%"></div></div>
+        <div class="task-card-log"></div>
+        <div class="task-card-actions">
+          <button class="btn btn-sm" data-act="kill" title="中止任务">停止</button>
+        </div>`;
+      this.body.appendChild(el);
+      el.querySelector("[data-act=kill]").onclick = async () => {
+        try { await api(`/api/tasks/${t.id}/kill`, { method: "POST" }); toast(`已请求中止: ${this.labelOf(t)}`); }
+        catch (e) { toast(`中止失败: ${e.message}`); }
+      };
+      this.cards.set(t.id, { el, name: this.labelOf(t), status: "running", logEl: el.querySelector(".task-card-log"), barEl: el.querySelector(".task-card-bar-fill"), failed: false });
+      this.el.classList.add("visible");
+    },
+    /** 更新运行中卡片（进度条 + 日志行） */
+    async updateRunning(t) {
+      const card = this.cards.get(t.id);
+      if (!card || card.status !== "running") return;
+      try {
+        const { log } = await api(`/api/tasks/${t.id}/log`);
+        const prog = this.progressFrom(log);
+        if (prog?.pct != null) card.barEl.style.width = `${Math.min(prog.pct, 99)}%`;
+        const line = this.lastLogLine(log);
+        if (line.text) {
+          card.logEl.textContent = line.text;
+          card.logEl.className = "task-card-log" + (line.kind ? ` ${line.kind}` : "");
+        }
+      } catch { /* 日志拉取失败忽略 */ }
+    },
+    /** 任务结束：成功→绿+短暂展示后收起；失败→红+驻留 */
+    finishCard(t, card) {
+      const ok = t.status === "success";
+      card.status = t.status;
+      card.failed = !ok;
+      card.el.classList.remove("running");
+      card.el.classList.add(ok ? "success" : "failed");
+      const st = card.el.querySelector(".task-card-status");
+      st.textContent = ok ? "✅ 完成" : "❌ 失败";
+      st.className = "task-card-status " + (ok ? "success" : "failed");
+      card.barEl.style.width = ok ? "100%" : "100%";
+      const act = card.el.querySelector(".task-card-actions");
+      if (act) act.remove();
+      // 失败 → 拉一次日志显示错误行 + 驻留（可手动关闭）
+      if (!ok) {
+        (async () => {
+          try {
+            const { log } = await api(`/api/tasks/${t.id}/log`);
+            const line = this.lastLogLine(log);
+            if (line.text) { card.logEl.textContent = line.text; card.logEl.className = "task-card-log error"; }
+          } catch { /* ignore */ }
+        })();
+        this.done.push({ id: t.id, el: card.el });
+        // 失败卡片提供关闭按钮
+        const close = document.createElement("button");
+        close.className = "btn btn-sm";
+        close.textContent = "关闭";
+        close.onclick = () => { this.removeCard(t.id); this.done = this.done.filter((d) => d.id !== t.id); };
+        card.el.appendChild(close);
+      } else {
+        // 成功 → 3.5s 后收起（若用户已关闭则跳过）
+        setTimeout(() => { if (this.cards.has(t.id) && !card.failed) this.removeCard(t.id); }, 3500);
+      }
+      this.refreshCount();
+    },
+    removeCard(id) {
+      const card = this.cards.get(id);
+      if (card) { card.el.remove(); this.cards.delete(id); }
+      this.done = this.done.filter((d) => d.id !== id);
+      const visible = this.cards.size > 0 || this.done.length > 0;
+      this.el.classList.toggle("visible", visible);
+      this.refreshCount();
+    },
+    refreshCount() {
+      const running = [...this.cards.values()].filter((c) => c.status === "running").length;
+      const failed = this.done.length;
+      this.count.textContent = running ? `${running} 个进行中` : failed ? `${failed} 个失败` : "";
+    },
+  };
+
   /* ================= DOM 引用 ================= */
   const $ = (id) => document.getElementById(id);
   const outlineList = $("outlineList");
@@ -819,6 +998,7 @@
     loadConfig();
     loadRefPool(); // 参考书池(跨书参考源选择)
     loadBooks();   // 我的书(mybook 资产区)
+    taskBar.init(); // 浮动任务栏（全局任务进度/报错）
     applyAutoSaveSetting(); // 定时自动保存（设置间隔，默认 5 分钟）
     // WebUI 心跳：每 15s 上报存活；页面关闭后 server 60s 无心跳自动退出
     setInterval(() => {

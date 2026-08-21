@@ -267,6 +267,69 @@ body {
 }
 #toast.show { opacity: 1; transform: translateY(0); }
 
+/* ===== 浮动任务栏（任务进度 / 报错，右下角，toast 上方） ===== */
+#taskBar {
+  position: fixed; right: 18px; bottom: 68px; z-index: 190;
+  width: 340px; max-width: calc(100vw - 36px);
+  background: var(--bg-module); color: var(--label-primary);
+  border: 1px solid var(--border-strong); border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(16, 22, 31, 0.18);
+  font-size: 12.5px; overflow: hidden;
+  display: none;
+}
+#taskBar.visible { display: block; }
+#taskBar.minimized .task-bar-body { display: none; }
+.task-bar-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; cursor: pointer;
+  background: var(--bg-module);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+.task-bar-title { font-weight: 700; font-size: 13px; }
+.task-bar-count { color: var(--label-secondary); font-size: 12px; flex: 1; }
+.task-bar-min {
+  border: none; background: transparent; color: var(--label-secondary);
+  font-size: 14px; cursor: pointer; padding: 0 4px; line-height: 1;
+}
+.task-bar-min:hover { color: var(--label-primary); }
+.task-bar-body { max-height: 260px; overflow-y: auto; padding: 4px 0; }
+.task-card { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.task-card:last-child { border-bottom: none; }
+.task-card-head {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 8px; margin-bottom: 5px;
+}
+.task-card-name {
+  font-weight: 600; font-size: 12.5px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.task-card-status { font-size: 11.5px; white-space: nowrap; flex-shrink: 0; }
+.task-card-status.running { color: var(--accent, #3b82f6); }
+.task-card-status.success { color: var(--green-500, #22c55e); }
+.task-card-status.failed  { color: #ef4444; }
+.task-card-bar {
+  height: 5px; border-radius: 3px; background: var(--border);
+  overflow: hidden; margin: 4px 0 6px;
+}
+.task-card-bar-fill {
+  height: 100%; border-radius: 3px;
+  background: linear-gradient(90deg, #3b82f6, #22c55e);
+  transition: width 0.4s var(--ease);
+}
+.task-card.failed .task-card-bar-fill { background: #ef4444; }
+.task-card.success .task-card-bar-fill { background: #22c55e; }
+.task-card-log {
+  color: var(--label-secondary); font-size: 11.5px; line-height: 1.5;
+  max-height: 54px; overflow: hidden;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  word-break: break-all;
+}
+.task-card-log.warn { color: #d97706; }
+.task-card-log.error { color: #ef4444; }
+.task-card-actions { margin-top: 6px; display: flex; gap: 6px; }
+.task-card-actions .btn { font-size: 11.5px; padding: 2px 8px; }
+
 /* 滚动条 */
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; }
