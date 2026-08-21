@@ -31,15 +31,15 @@ import { checkJsonText } from "./verify-json.mjs";
 import { buildLexicalIndex, buildVectors } from "../retriever/build-derived.mjs";
 import { ensureDerived } from "../retriever/ensure-derived.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
-import { CODE_ROOT, DATA_ROOT, configPath, corpusDir, storeDir } from "../shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, configPath, corpusDir, storeDir, projectRoot } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const args = process.argv.slice(2);
-const project = args.find((a) => !a.startsWith("--")) ?? "红楼梦";
+const project = args.find((a) => !a.startsWith("--")) ?? "大王饶命";
 const flags = args.filter((a) => a.startsWith("--"));
-const projectDir = path.join(storeDir, `${project}project`);
+const projectDir = projectRoot(project); // 域感知：两域自动探测
 const corpusList = path.join(corpusDir, `${project}-章节清单.csv`);
 const listPath = fs.existsSync(corpusList) ? corpusList : path.join(corpusDir, "章节清单.csv");
 
@@ -591,7 +591,7 @@ export function finalizePart(projectDir, project) {
     generatedBy: "novelread/aggregates.mjs (finalizePart)",
   };
   fs.writeFileSync(path.join(projectDir, "project-meta.json"), JSON.stringify(meta, null, 2) + "\n", "utf-8");
-  console.log(`\n✅ 头文档已写入: store/${project}project/project-meta.json（verifiedAt=${meta.verify.verifiedAt}）`);
+  console.log(`\n✅ 头文档已写入: ${projectDir}/project-meta.json（verifiedAt=${meta.verify.verifiedAt}）`);
   return { syntaxPass, contractIssues };
 }
 

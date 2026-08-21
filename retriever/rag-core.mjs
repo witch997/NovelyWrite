@@ -8,34 +8,47 @@
  *  - 上下文块：hits → LLM 可读文本块（无 source 标记，降 prompt 长度）
  *  - 去重：同 project+chapter+shotId 只留一条
  *
- * 数据源约定（NovelyWrite 自包含）：
- *  - 事实层：store/<语料名>project/分镜标注/json/第XXXX章.json + 句子标注/json/第XXXX章.json
- *  - 派生层：store/派生/词典/*.json + store/派生/向量/*.json（由 build-derived.mjs 构建）
+ * 数据源约定（NovelyWrite 自包含，域化布局）：
+ *  - 事实层：store/<myproject|exproject>/<书>project/分镜标注/json/第XXXX章.json + 句子标注/json/第XXXX章.json
+ *  - 派生层：<书>project/derived/dict/*.json + <书>project/derived/vector/*.json（每书一份，英文目录，由 build-derived.mjs 构建）
  */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { storeDir } from "../shared/paths.mjs"; // 数据根下的 store（支持 DSH_HOME 分发）
+import { storeDir, projectRoot } from "../shared/paths.mjs"; // 数据根下的 store + 域感知项目根（支持 NOVELYWRITE_HOME 分发）
 
 /** store 根（来自 shared/paths.mjs——数据根下） */
 export { storeDir };
-/** 全域派生目录（词典 + 向量，跨 project 共享） */
-export const derivedDir = path.join(storeDir, "派生");
-/** 词典目录 */
-export const dictDir = path.join(derivedDir, "词典");
-/** 向量目录 */
-export const vectorDir = path.join(derivedDir, "向量");
-/** 向量索引文件 */
-export const vectorIndexFile = path.join(vectorDir, "index.json");
+/** 项目根（来自 shared/paths.mjs——域感知：myproject/exproject 自动探测） */
+export { projectRoot };
+
+/**
+ * 每书派生目录（英文，位于 <书>project/derived/ 下）
+ * 设计：每书一份派生（词典/向量），支持"勾选某书/我的全部/外部库"的域池检索；
+ *       书间改动互不影响（重算隔离）。
+ */
+export function derivedDirOf(project) {
+  return path.join(projectRoot(project), "derived");
+}
+
+/** 每书词典目录 */
+export function dictDirOf(project) {
+  return path.join(derivedDirOf(project), "dict");
+}
+
+/** 每书向量目录 */
+export function vectorDirOf(project) {
+  return path.join(derivedDirOf(project), "vector");
+}
+
+/** 每书向量索引文件 */
+export function vectorIndexFileOf(project) {
+  return path.join(vectorDirOf(project), "index.json");
+}
 
 /** 章号四位数补零 */
 export function padChapter(n) {
   return String(n).padStart(4, "0");
-}
-
-/** project 根目录（store/<语料名>project） */
-export function projectRoot(project) {
-  return path.join(storeDir, `${project}project`);
 }
 
 /** 分镜标注 JSON 路径 */

@@ -4,6 +4,10 @@
  * 输入：查询意图（text/type/funcs/label）+ 检索参数（projects/quota/topk）
  * 输出：三通道 hits 并集（不排序，LLM 自己做语义处理）+ 可选上下文块
  *
+ * 域化说明：projects 可限定"某本书 / 我的全部 / 外部库"组合——
+ *   retrieve(query, { projects: ["书A", "书B"] }) → 只在这些书里召回（跨域自动解析）
+ *   不传 projects → 两域全部书（平权大池）
+ *
  * 用法：
  *   import { retrieve } from "./retriever.mjs";
  *   const { hits, contextBlock } = await retrieve({

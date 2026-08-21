@@ -2,7 +2,7 @@
  * derived-state.mjs — 派生数据的状态对比（"调用前对比"的核心）
  *
  * 职责：
- *   - 扫描 store 事实层（各 project 的分镜目录 + 每章源文件 mtime）
+ *   - 扫描 store 事实层（各 project 的分镜目录 + 每章源文件 mtime，两域）
  *   - 生成覆盖清单（派生数据 derivedFrom 里记录的"我覆盖了哪些章、源 mtime 是多少"）
  *   - 对比：事实层现状 vs 派生记录 → 判定"是否需要重建"
  *
@@ -15,18 +15,17 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { storeDir, projectRoot, shotJsonPath } from "./rag-core.mjs";
+import { projectRoot, shotJsonPath } from "./rag-core.mjs";
+import { listProjects } from "../shared/paths.mjs";
 
 /**
- * 扫描 store 事实层，返回覆盖清单 { "project:chapter": sourceMtime }
+ * 扫描 store 事实层（两域），返回覆盖清单 { "project:chapter": sourceMtime }
  * 追踪对象：分镜文件 + 句子文件 的 mtime（词典 PMI 建库依赖句子 text，句子变化也必须触发重建）
  * @param {object} opts { projects?: string[] }
  */
 export function scanSourceState(opts = {}) {
   const state = {};
-  const projects = opts.projects ?? fs.readdirSync(storeDir, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && d.name.endsWith("project"))
-    .map((d) => d.name.replace(/project$/, ""));
+  const projects = opts.projects?.length ? opts.projects : listProjects();
 
   for (const project of projects) {
     const shotDir = path.join(projectRoot(project), "分镜标注", "json");

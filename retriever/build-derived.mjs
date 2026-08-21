@@ -1,27 +1,31 @@
 /**
- * build-derived.mjs — 派生构建器（词典 + 四表索引 + 向量，全域）
+ * build-derived.mjs — 派生构建器（词典 + 四表索引 + 向量，每书一份）
  *
- * 从 store 事实层（各 project 的分镜/句子 JSON）构建派生数据到 store/派生/：
- *   store/派生/词典/entity-dict.json     # 全域实体词典（label 词整体 + PMI 切词高频真词）
- *   store/派生/词典/lexical-index.json   # 四表倒排（byFunc/byType/byEntity/byGram，后期扩容预备）
- *   store/派生/向量/第XXXX章.json         # 每章向量文件（全域，key=project:章）
- *   store/派生/向量/index.json           # 向量索引（embedVersion + 每章 mtime）
+ * 从 store 事实层（各 project 的分镜/句子 JSON）构建派生数据到**每书的 derived 目录**：
+ *   <书>project/derived/dict/entity-dict.json    # 该书实体词典（label 词整体 + PMI 切词高频真词）
+ *   <书>project/derived/dict/lexical-index.json  # 四表倒排（byFunc/byType/byEntity/byGram，后期扩容预备）
+ *   <书>project/derived/vector/第XXXX章.json     # 该书每章向量文件
+ *   <书>project/derived/vector/index.json        # 该书向量索引（embedVersion + 每章 mtime）
+ *
+ * 域化说明：每书独立派生（词典/向量），书间重算隔离——
+ *   改 A 书只重建 A 书词典/向量，不触发全域重建（支持"我的作品/外部库"分池检索）。
  *
  * 用法：
- *   node retriever/build-derived.mjs --dict          # 只构建词典
- *   node retriever/build-derived.mjs --index         # 只构建四表索引
- *   node retriever/build-derived.mjs --vector        # 只构建/增量向量
- *   node retriever/build-derived.mjs --all           # 全部
- *   node retriever/build-derived.mjs --reset-vector  # 强制全量重建向量
+ *   node retriever/build-derived.mjs --dict [--book=<书>]     # 只构建词典（默认全部书）
+ *   node retriever/build-derived.mjs --index                   # 只构建四表索引（预备，跳过）
+ *   node retriever/build-derived.mjs --vector [--book=<书>]    # 只构建/增量向量
+ *   node retriever/build-derived.mjs --all                     # 全部
+ *   node retriever/build-derived.mjs --reset-vector            # 强制全量重建向量
  */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { derivedDir, dictDir, vectorDir, vectorIndexFile, storeDir, projectRoot, shotJsonPath, shotToText, padChapter } from "./rag-core.mjs";
+import { dictDirOf, vectorDirOf, vectorIndexFileOf, storeDir, projectRoot, shotJsonPath, shotToText, padChapter } from "./rag-core.mjs";
 import { scanAllShots } from "./lexical.mjs";
 import { createEmbed } from "../shared/embed.mjs";
 import { ensureEmbedReady } from "./embed.mjs";
 import { scanSourceState } from "./derived-state.mjs";
+import { listProjects } from "../shared/paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -121,51 +125,64 @@ export function pmiCut(text, table, opts = {}) {
 }
 
 /**
- * 实体词典构建：以分镜 label 为主源（人写的浓缩词 = 天然真实词，整体入词，不受 PMI 误伤），
- * 次源用 PMI 切词器从句子 text 提取真词（替代旧滑窗，消除跨词碎片污染），频率 ≥ 阈值。
+ * 实体词典构建（每书一份）：以该书分镜 label 为主源（人写的浓缩词 = 天然真实词，整体入词，不受 PMI 误伤），
+ * 次源用 PMI 切词器从该书句子 text 提取真词（替代旧滑窗，消除跨词碎片污染），频率 ≥ 阈值。
+ * @param {object} opts { book?: string } 指定书；缺省 = 遍历 store 两域全部书，各建一份
+ * @returns {object|null} 单书构建返回 payload；多书返回 null（逐书打印）
  */
 function buildDict(opts = {}) {
-  fs.mkdirSync(dictDir, { recursive: true });
-  const projects = fs.readdirSync(storeDir, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && d.name.endsWith("project"))
-    .map((d) => d.name.replace(/project$/, ""));
+  const books = opts.book ? [opts.book] : listProjects();
+  if (!books.length) { console.log("[词典] 无项目（store 两域为空），跳过"); return null; }
+  let last = null;
+  for (const project of books) {
+    last = buildDictFor(project, opts);
+  }
+  return last;
+}
+
+/** 构建单书词典 */
+function buildDictFor(project, opts = {}) {
+  const outDir = dictDirOf(project);
+  fs.mkdirSync(outDir, { recursive: true });
 
   // ① label 词集（主源：人写的浓缩词，整体入词）
   const labelWords = new Set();
-  for (const project of projects) {
+  {
     const shotDir = path.join(projectRoot(project), "分镜标注", "json");
-    if (!fs.existsSync(shotDir)) continue;
-    for (const file of fs.readdirSync(shotDir).filter((f) => /^第\d{4}章\.json$/.test(f))) {
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(shotDir, file), "utf-8"));
-        for (const s of data.shots ?? []) {
-          const label = (s.label ?? "").trim();
-          if (label && !DICT_STOPWORDS.has(label) && label.length >= 2 && label.length <= 8) {
-            labelWords.add(label);
+    if (fs.existsSync(shotDir)) {
+      for (const file of fs.readdirSync(shotDir).filter((f) => /^第\d{4}章\.json$/.test(f))) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(shotDir, file), "utf-8"));
+          for (const s of data.shots ?? []) {
+            const label = (s.label ?? "").trim();
+            if (label && !DICT_STOPWORDS.has(label) && label.length >= 2 && label.length <= 8) {
+              labelWords.add(label);
+            }
           }
-        }
-      } catch { /* 跳过 */ }
+        } catch { /* 跳过 */ }
+      }
     }
   }
 
-  // ② 高频真词补充（次源：PMI 切词器从句子 text 提取真词，频率 ≥ minFreq）
-  const pmiTable = buildPmiTable(projects);
+  // ② 高频真词补充（次源：该书 PMI 切词器从句子 text 提取真词，频率 ≥ minFreq）
+  const pmiTable = buildPmiTable([project]);
   const freq = new Map();
-  for (const project of projects) {
+  {
     const sentDir = path.join(projectRoot(project), "句子标注", "json");
-    if (!fs.existsSync(sentDir)) continue;
-    for (const file of fs.readdirSync(sentDir).filter((f) => /^第\d{4}章\.json$/.test(f))) {
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(sentDir, file), "utf-8"));
-        for (const s of data.sentences ?? []) {
-          const clean = (s.text ?? "").replace(/[，。！？…、；：""''（）《》\s]/g, "");
-          for (const w of pmiCut(clean, pmiTable, opts)) {
-            if (w.length >= 2 && w.length <= 4 && !DICT_STOPWORDS.has(w)) {
-              freq.set(w, (freq.get(w) ?? 0) + 1);
+    if (fs.existsSync(sentDir)) {
+      for (const file of fs.readdirSync(sentDir).filter((f) => /^第\d{4}章\.json$/.test(f))) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(sentDir, file), "utf-8"));
+          for (const s of data.sentences ?? []) {
+            const clean = (s.text ?? "").replace(/[，。！？…、；：""''（）《》\s]/g, "");
+            for (const w of pmiCut(clean, pmiTable, opts)) {
+              if (w.length >= 2 && w.length <= 4 && !DICT_STOPWORDS.has(w)) {
+                freq.set(w, (freq.get(w) ?? 0) + 1);
+              }
             }
           }
-        }
-      } catch { /* 跳过 */ }
+        } catch { /* 跳过 */ }
+      }
     }
   }
   // PMI 判出的词是真词（可信，无碎片），频次阈值可远低于滑窗方案：
@@ -180,10 +197,11 @@ function buildDict(opts = {}) {
 
   const payload = {
     schema: "dsh/entity-dict/v1",
-    scope: "global",
+    scope: "book", // 每书一份
+    project,
     derivedFrom: {
-      projects,
-      sourceState: scanSourceState(), // 覆盖清单（调用前对比用）
+      projects: [project],
+      sourceState: scanSourceState({ projects: [project] }), // 该书覆盖清单（调用前对比用）
       builtAt: new Date().toISOString(),
     },
     stats: {
@@ -195,9 +213,9 @@ function buildDict(opts = {}) {
     },
     entities,
   };
-  const outFile = path.join(dictDir, "entity-dict.json");
+  const outFile = path.join(outDir, "entity-dict.json");
   fs.writeFileSync(outFile, JSON.stringify(payload, null, 2), "utf-8");
-  console.log(`[词典] 已构建 ${entities.length} 个实体（label ${labelWords.size} + PMI高频 ${highFreqWords.length}）→ ${outFile}`);
+  console.log(`[词典] ${project}: 已构建 ${entities.length} 个实体（label ${labelWords.size} + PMI高频 ${highFreqWords.length}）→ ${outFile}`);
   return payload;
 }
 
@@ -265,7 +283,7 @@ async function buildChapterVectors(project, chapter, embedCfg) {
   };
 }
 
-/** 构建/增量更新向量库 */
+/** 构建/增量更新向量库（每书独立 index + 向量文件，书间重算隔离） */
 async function buildVectors(opts = {}) {
   const ready = opts.embedCfg
     ? { ok: true, cfg: opts.embedCfg }
@@ -283,40 +301,56 @@ async function buildVectors(opts = {}) {
     return signal;
   }
   const embedCfg = ready.cfg;
-  fs.mkdirSync(vectorDir, { recursive: true });
 
-  const projects = opts.projects ?? fs.readdirSync(storeDir, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && d.name.endsWith("project"))
-    .map((d) => d.name.replace(/project$/, ""));
+  const projects = opts.projects?.length ? opts.projects : listProjects();
 
-  const jobs = collectVectorJobs(projects);
-  const index = fs.existsSync(vectorIndexFile) ? JSON.parse(fs.readFileSync(vectorIndexFile, "utf-8")) : { chapters: {} };
+  let totalBuilt = 0, totalSkipped = 0, totalShots = 0, totalChapters = 0;
+  for (const project of projects) {
+    const r = await buildProjectVectors(project, embedCfg, opts);
+    totalBuilt += r.built;
+    totalSkipped += r.skipped;
+    totalShots += r.index.stats?.totalShots ?? 0;
+    totalChapters += r.index.stats?.totalChapters ?? 0;
+  }
 
-  // 模型变更 → 全量重建
+  console.log(`[向量] 全部完成：构建 ${totalBuilt} 章，跳过 ${totalSkipped} 章，总量 ${totalShots} 分镜 / ${totalChapters} 章（${projects.length} 书）`);
+  return { ok: true, stats: { totalBuilt, totalSkipped, totalShots, totalChapters } };
+}
+
+/** 构建单书向量（增量：章 mtime 对比；reset/模型变更 → 该书全量） */
+async function buildProjectVectors(project, embedCfg, opts = {}) {
+  const vDir = vectorDirOf(project);
+  const vIndexFile = vectorIndexFileOf(project);
+  fs.mkdirSync(vDir, { recursive: true });
+
+  const jobs = collectVectorJobs([project]);
+  const index = fs.existsSync(vIndexFile) ? JSON.parse(fs.readFileSync(vIndexFile, "utf-8")) : { chapters: {} };
+
+  // 模型变更 / --reset → 该书全量重建
   if (opts.reset || index.embedding?.model !== embedCfg.model || index.embedding?.dimension !== embedCfg.dimension) {
-    console.log("[向量] embed 配置变更或 --reset，全量重建");
-    fs.rmSync(vectorDir, { recursive: true, force: true });
-    fs.mkdirSync(vectorDir, { recursive: true });
+    console.log(`[向量] ${project}: embed 配置变更或 --reset，全量重建`);
+    fs.rmSync(vDir, { recursive: true, force: true });
+    fs.mkdirSync(vDir, { recursive: true });
     index.chapters = {};
   }
 
   let built = 0, skipped = 0;
-  for (const { project, chapter } of jobs) {
-    const key = `${project}:${chapter}`;
+  for (const { project: pj, chapter } of jobs) {
+    const key = `${pj}:${chapter}`;
     const existing = index.chapters[key];
-    const shotFile = shotJsonPath(project, chapter);
+    const shotFile = shotJsonPath(pj, chapter);
     const shotMtime = fs.existsSync(shotFile) ? fs.statSync(shotFile).mtime.toISOString() : null;
     if (!opts.reset && existing && existing.sourceMtime === shotMtime) {
       skipped++;
       continue;
     }
-    const data = await buildChapterVectors(project, chapter, embedCfg);
+    const data = await buildChapterVectors(pj, chapter, embedCfg);
     if (!data) { skipped++; continue; }
-    const outFile = path.join(vectorDir, `${project}-${padChapter(chapter)}.json`);
+    const outFile = path.join(vDir, `${pj}-${padChapter(chapter)}.json`);
     fs.writeFileSync(outFile, JSON.stringify(data.payload), "utf-8");
     index.chapters[key] = {
-      project, chapter,
-      file: path.relative(vectorDir, outFile).replaceAll("\\", "/"),
+      project: pj, chapter,
+      file: path.relative(vDir, outFile).replaceAll("\\", "/"),
       shotCount: data.vectors.length,
       sourceMtime: shotMtime,
       lastEmbedded: new Date().toISOString(),
@@ -325,20 +359,21 @@ async function buildVectors(opts = {}) {
   }
 
   index.schema = "dsh/vector-index/v1";
+  index.project = project;
   index.embedding = { provider: "siliconflow", model: embedCfg.model, dimension: embedCfg.dimension };
-  index.projects = projects;
+  index.projects = [project];
   index.stats = {
     totalShots: Object.values(index.chapters).reduce((a, c) => a + c.shotCount, 0),
     totalChapters: Object.keys(index.chapters).length,
   };
   index.updatedAt = new Date().toISOString();
   // 原子切换：先写临时文件，再 rename 覆盖（防读到半写索引）
-  const tmpFile = `${vectorIndexFile}.tmp`;
+  const tmpFile = `${vIndexFile}.tmp`;
   fs.writeFileSync(tmpFile, JSON.stringify(index, null, 2), "utf-8");
-  fs.renameSync(tmpFile, vectorIndexFile);
+  fs.renameSync(tmpFile, vIndexFile);
 
-  console.log(`[向量] 构建 ${built} 章，跳过 ${skipped} 章，总量 ${index.stats.totalShots} 分镜 / ${index.stats.totalChapters} 章`);
-  return { ok: true, index };
+  console.log(`[向量] ${project}: 构建 ${built} 章，跳过 ${skipped} 章，总量 ${index.stats.totalShots} 分镜 / ${index.stats.totalChapters} 章`);
+  return { built, skipped, index };
 }
 
 /* ========== 主入口 ========== */
@@ -348,14 +383,16 @@ async function main() {
   const doIndex = args.includes("--index") || args.includes("--all");
   const doVector = args.includes("--vector") || args.includes("--all");
   const reset = args.includes("--reset-vector");
+  const book = (() => {
+    const a = args.find((x) => x.startsWith("--book="));
+    return a ? a.slice("--book=".length) : null;
+  })();
 
-  fs.mkdirSync(derivedDir, { recursive: true });
-
-  if (doDict) buildDict();
+  if (doDict) buildDict({ book });
   if (doIndex) buildLexicalIndex();
-  if (doVector) await buildVectors({ reset });
+  if (doVector) await buildVectors({ reset, projects: book ? [book] : undefined });
   if (!doDict && !doIndex && !doVector) {
-    console.error("用法: node retriever/build-derived.mjs [--dict] [--index] [--vector] [--all] [--reset-vector]");
+    console.error("用法: node retriever/build-derived.mjs [--dict] [--index] [--vector] [--all] [--reset-vector] [--book=<书>]");
     process.exit(1);
   }
 }

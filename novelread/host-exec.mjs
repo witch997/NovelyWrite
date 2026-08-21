@@ -24,7 +24,7 @@ import { checkJsonText } from "./verify-json.mjs";
 import { execFileSync } from "node:child_process";
 import { deriveChapter } from "./derive-chapter.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir } from "../shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -131,6 +131,7 @@ function argVal(name) {
   return a ? a.slice(name.length + 3) : null;
 }
 const corpusName = argVal("corpus") ?? "红楼梦";
+const domain = argVal("domain") ?? DOMAIN.EX; // 默认外部知识库；--domain=my 我的作品
 const chapterArgs = argVal("chapter");
 const doAll = args.includes("--all");
 const chapters = doAll ? null : (chapterArgs ? chapterArgs.split(",").map(Number) : null);
@@ -142,7 +143,15 @@ const LIST_CANDIDATES = [
   path.join(corpusDir, "章节清单.csv"),
 ];
 const LIST_PATH = LIST_CANDIDATES.find((p) => fs.existsSync(p));
-const PROJECT_DIR = path.join(storeDir, `${corpusName}project`);
+// 项目根（域感知）：--domain 指定域；缺省自动探测两域（同名已禁止）
+const PROJECT_DIR = (() => {
+  try {
+    return projectRoot(corpusName, domain);
+  } catch {
+    // 未建库：创建项目目录（禁止同名检查在 createProject 内）
+    return createProject(corpusName, domain);
+  }
+})();
 
 function readLines(p) {
   return fs.readFileSync(p, "utf-8").replace(/\r\n/g, "\n").split("\n");

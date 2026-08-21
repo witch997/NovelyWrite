@@ -6,6 +6,9 @@
  *  - 切词通道：分镜 label（浓缩情境）与整镜原文（事实层，回源句子 JSON）
  *              ——词典（entity-dict）是 tokenize 的切词依据（label 整体词 + PMI 真词）
  *
+ * 域化说明：每书独立词典（<书>project/derived/dict/entity-dict.json），
+ *   tokenize/textRecall 按书加载对应词典——书间切词互不干扰（重算隔离）。
+ *
  * 通道逻辑（已确认决策）：
  *  标签通道：**本质是跨书噪声源**——给写作 LLM 提供标签相近的跨书参考（多样性，不追求精确）。
  *            精确同类池（funcs 全命中）→ 确定性取 1（高基准分 2.0）
@@ -23,54 +26,55 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { storeDir, dictDir, projectRoot, shotJsonPath, shotToText, padChapter } from "./rag-core.mjs";
+import { dictDirOf, projectRoot, shotJsonPath, shotToText, padChapter } from "./rag-core.mjs";
+import { listProjects as listAllProjects } from "../shared/paths.mjs";
 
-/* ---------- 全域实体词典（store/派生/词典/entity-dict.json） ---------- */
-let _dictCache = null; // { entities: string[]（按长度降序）, derivedFrom }
+/* ---------- 每书实体词典（<书>project/derived/dict/entity-dict.json，按书缓存） ---------- */
+const _dictCache = new Map(); // project → { entities, byFirstChar, derivedFrom }
 
-export function loadEntityDict() {
-  if (_dictCache) return _dictCache;
-  const file = path.join(dictDir, "entity-dict.json");
-  if (!fs.existsSync(file)) {
-    _dictCache = { entities: [], derivedFrom: null };
-    return _dictCache;
+export function loadEntityDict(project) {
+  if (_dictCache.has(project)) return _dictCache.get(project);
+  const file = path.join(dictDirOf(project), "entity-dict.json");
+  let dict = { entities: [], byFirstChar: new Map(), derivedFrom: null };
+  if (fs.existsSync(file)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(file, "utf-8"));
+      const entities = (data.entities ?? []).map((e) => (typeof e === "string" ? e : e.text)).filter(Boolean);
+      // 最长优先（最大匹配）
+      entities.sort((a, b) => b.length - a.length);
+      // 首字索引：字 → 该字开头的词列表（tokenize 用——避免线性遍历全词典，性能关键：
+      //   线性 O(正文长×词典长) ≈ 7s/1143镜；首字索引 O(正文长×候选数) ≈ 58ms，快 ~120 倍，10万镜 ~5s）
+      const byFirstChar = new Map();
+      for (const e of entities) {
+        const ch = e[0];
+        if (!byFirstChar.has(ch)) byFirstChar.set(ch, []);
+        byFirstChar.get(ch).push(e);
+      }
+      dict = { entities, byFirstChar, derivedFrom: data.derivedFrom ?? null };
+    } catch { /* 词典损坏 → 空 */ }
   }
-  try {
-    const data = JSON.parse(fs.readFileSync(file, "utf-8"));
-    const entities = (data.entities ?? []).map((e) => (typeof e === "string" ? e : e.text)).filter(Boolean);
-    // 最长优先（最大匹配）
-    entities.sort((a, b) => b.length - a.length);
-    // 首字索引：字 → 该字开头的词列表（tokenize 用——避免线性遍历全词典，性能关键：
-    //   线性 O(正文长×词典长) ≈ 7s/1143镜；首字索引 O(正文长×候选数) ≈ 58ms，快 ~120 倍，10万镜 ~5s）
-    const byFirstChar = new Map();
-    for (const e of entities) {
-      const ch = e[0];
-      if (!byFirstChar.has(ch)) byFirstChar.set(ch, []);
-      byFirstChar.get(ch).push(e);
-    }
-    _dictCache = { entities, byFirstChar, derivedFrom: data.derivedFrom ?? null };
-  } catch {
-    _dictCache = { entities: [], byFirstChar: new Map(), derivedFrom: null };
-  }
-  return _dictCache;
+  _dictCache.set(project, dict);
+  return dict;
 }
 
-/** 词典版本戳（供调用方对比源变化） */
-export function dictVersion() {
-  return loadEntityDict().derivedFrom;
+/** 词典版本戳（供调用方对比源变化；按书） */
+export function dictVersion(project) {
+  return loadEntityDict(project).derivedFrom;
 }
 
-/* ---------- 切词（纯词典最大匹配，无 2-gram 兜底） ---------- */
+/* ---------- 切词（纯词典最大匹配，无 2-gram 兜底；按书词典） ---------- */
 /**
  * 词典切词：正向最大匹配（最长优先），只切词典里有的词。
  * 设计目的：词典由 label 整体词 + PMI 真词构成（已去碎片），切词只认词典词——
  *   无 2-gram 兜底（避免碎片噪音，如 树识/破黑/会傍）。
  * 代价：词典外的文本被逐字跳过（无产出）；「庙会傍晚」只切出整体，不产子词「庙会」
  *   ——子词命中由调用方处理（见 tokenRecall 的 label 包含匹配）。
+ * @param {string} text 待切文本
+ * @param {string} project 用哪本书的词典切
  */
-export function tokenize(text) {
+export function tokenize(text, project) {
   const clean = (text ?? "").replace(/[\[\]（）()【】「」、，。！？：；“”"'《》\s\n]/g, " ");
-  const { byFirstChar } = loadEntityDict();
+  const { byFirstChar } = loadEntityDict(project);
   const tokens = [];
   let remaining = clean;
   while (remaining.trim()) {
@@ -90,21 +94,18 @@ export function tokenize(text) {
   return tokens;
 }
 
-/* ---------- 事实层扫描：收集全部 project 的全部分镜 ---------- */
-/** store 下所有 <语料名>project 目录名 */
-export function listProjects() {
-  if (!fs.existsSync(storeDir)) return [];
-  return fs.readdirSync(storeDir, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && d.name.endsWith("project"))
-    .map((d) => d.name.replace(/project$/, ""));
+/* ---------- 事实层扫描：收集全部 project 的全部分镜（两域） ---------- */
+/** store 两域下所有 <书>project 目录名（域感知） */
+export function listProjects(domain) {
+  return listAllProjects(domain);
 }
 
 /**
- * 扫描全部 store 分镜，返回 {project, chapter, shotId, type, funcs, label, sentenceIds, chapterNum}
- * @param {object} opts { projects?: string[] } 限定范围
+ * 扫描 store 分镜（两域），返回 {project, chapter, shotId, type, funcs, label, sentenceIds, chapterNum}
+ * @param {object} opts { projects?: string[] } 限定范围（缺省 = 两域全部）
  */
 export function scanAllShots(opts = {}) {
-  const projects = opts.projects ?? listProjects();
+  const projects = opts.projects?.length ? opts.projects : listProjects();
   const shots = [];
   for (const project of projects) {
     const shotDir = path.join(projectRoot(project), "分镜标注", "json");
@@ -202,8 +203,6 @@ export function tokenRecall(query, opts = {}) {
   if (q.length < 2) return [];
   const topk = opts.topk ?? 2;
 
-  const qTokens = tokenize(q);            // 查询词典切词
-  const qSet = new Set(qTokens);
   const qRaw = q;                          // 原始查询（label 包含匹配用）
 
   const hits = []; // {shot, count} —— 命中分镜 + 命中次数（词重叠数）
@@ -212,10 +211,12 @@ export function tokenRecall(query, opts = {}) {
     let count = 0;
 
     // label 词重叠 + label 包含匹配兜底（子词命中，如 庙会 ⊆ 庙会傍晚）
+    // 切词用该镜所属书的词典（每书独立词典，域隔离）
     const label = (s.label ?? "").replace(/[\s]/g, "");
     if (label.length >= 2) {
-      const lTokens = tokenize(label);
-      count += lTokens.filter((t) => qSet.has(t)).length;
+      const lTokens = tokenize(label, s.project);
+      const qTokens = tokenize(q, s.project);
+      count += lTokens.filter((t) => qTokens.includes(t)).length;
       if (label.includes(qRaw) || qRaw.includes(label)) count = Math.max(count, 1);
     }
 
@@ -225,8 +226,9 @@ export function tokenRecall(query, opts = {}) {
       let shared = 0;
       for (const ch of new Set(qRaw)) if (text.includes(ch)) shared++;
       if (shared >= 2) {
-        const tTokens = tokenize(text);
-        count += tTokens.filter((t) => qSet.has(t)).length;
+        const tTokens = tokenize(text, s.project);
+        const qTokens = tokenize(q, s.project);
+        count += tTokens.filter((t) => qTokens.includes(t)).length;
       }
     }
 

@@ -24,7 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { checkJsonText } from "./verify-json.mjs";
-import { storeDir } from "../shared/paths.mjs";
+import { projectRoot } from "../shared/paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -34,8 +34,9 @@ const chapterArg = args.filter((a) => !a.startsWith("--") && project !== a)[0] ?
 const doAll = args.includes("--all");
 const contract = !args.includes("--no-contract");
 
-const projectDir = path.join(storeDir, `${project}project`);
-if (!project || !fs.existsSync(projectDir)) { console.error(`project 不存在: ${project}`); process.exit(2); }
+let projectDir = null;
+try { projectDir = project ? projectRoot(project) : null; } catch { projectDir = null; }
+if (!project || !projectDir || !fs.existsSync(projectDir)) { console.error(`project 不存在: ${project}`); process.exit(2); }
 
 /* ---------- 全书模式（--all）：循环单章 + 聚合层检查 ---------- */
 if (doAll) {

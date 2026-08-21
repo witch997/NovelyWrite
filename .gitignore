@@ -6,6 +6,7 @@ config.local.json
 corpus/
 store/
 output/
+mybook/
 novelread/state/
 features/shot-writing/sessions/
 

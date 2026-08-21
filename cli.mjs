@@ -24,7 +24,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
-import { CODE_ROOT, DATA_ROOT, corpusDir, storeDir } from "./shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, corpusDir, storeDir, myprojectDir, exprojectDir, projectRoot, listProjects, domainOf, DOMAIN, createProject } from "./shared/paths.mjs";
+import { report } from "./shared/errors.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -61,27 +62,24 @@ function detectIntent(input) {
   return null;
 }
 
-/* ================= 任务：kb（建立知识库） ================= */
+/* ================= 任务：kb（建立知识库，按域显示） ================= */
 
 /**
- * 扫描 corpus/ 语料 vs store/ 头文档，对比建库状态。
- * 已建库：corpus 有 <名>-语料.txt 且 store 有 <名>project/（尽量读 project-meta 显示进度）
- * 未建库：corpus 有语料但 store 无对应 project
+ * 扫描 corpus/ 语料 vs store 两域头文档，对比建库状态（按域分组）。
+ * 已建库：corpus 有 <名>-语料.txt 且 store/<域> 有 <名>project/（尽量读 project-meta 显示进度）
+ * 未建库：corpus 有语料但两域无对应 project
  */
 function kbStatus() {
   const corpusFiles = fs.existsSync(corpusDir)
     ? fs.readdirSync(corpusDir).filter((f) => f.endsWith("-语料.txt"))
     : [];
-  const storeProjects = fs.existsSync(storeDir)
-    ? fs.readdirSync(storeDir, { withFileTypes: true }).filter((e) => e.isDirectory() && e.name.endsWith("project")).map((e) => e.name)
-    : [];
-
   const built = [];
   const unbuilt = [];
   for (const cf of corpusFiles) {
     const name = cf.replace("-语料.txt", "");
-    const projectDir = path.join(storeDir, `${name}project`);
-    if (fs.existsSync(projectDir)) {
+    const domain = domainOf(name);
+    if (domain) {
+      const projectDir = projectRoot(name, domain);
       // 已建库：读 project-meta.json 显示进度（缺则标记"目录存在无头文档"）
       const metaPath = path.join(projectDir, "project-meta.json");
       if (fs.existsSync(metaPath)) {
@@ -90,44 +88,58 @@ function kbStatus() {
           const c = meta.counts ?? {};
           built.push({
             name,
+            domain,
             annotated: c.chaptersAnnotated ?? "?",
             total: c.chaptersTotal ?? "?",
             missing: (c.missingChapters ?? []).length,
             verifiedAt: meta.verify?.verifiedAt ?? null,
           });
         } catch {
-          built.push({ name, annotated: "?", total: "?", missing: "?", note: "project-meta 解析失败" });
+          built.push({ name, domain, annotated: "?", total: "?", missing: "?", note: "project-meta 解析失败" });
         }
       } else {
-        built.push({ name, annotated: "?", total: "?", missing: "?", note: "目录存在但无 project-meta.json（未终检）" });
+        built.push({ name, domain, annotated: "?", total: "?", missing: "?", note: "目录存在但无 project-meta.json（未终检）" });
       }
     } else {
       unbuilt.push(name);
     }
   }
-  return { corpusCount: corpusFiles.length, storeCount: storeProjects.length, built, unbuilt };
+  return { corpusCount: corpusFiles.length, built, unbuilt };
 }
 
 function runKb() {
   const s = kbStatus();
+  const myBuilt = s.built.filter((b) => b.domain === DOMAIN.MY);
+  const exBuilt = s.built.filter((b) => b.domain === DOMAIN.EX);
+  const storeCount = listProjects().length;
   console.log("\n========== 知识库状态 ==========");
-  console.log(`语料：${s.corpusCount} 个（corpus/*-语料.txt）| store 项目：${s.storeCount} 个（*project/）\n`);
+  console.log(`语料：${s.corpusCount} 个（corpus/*-语料.txt）| store 项目：${storeCount} 个（myproject ${listProjects(DOMAIN.MY).length} / exproject ${listProjects(DOMAIN.EX).length}）\n`);
 
-  if (s.built.length) {
-    console.log("【已建库】");
-    for (const b of s.built) {
+  if (exBuilt.length) {
+    console.log("【外部知识库（exproject）】");
+    for (const b of exBuilt) {
       const progress = typeof b.annotated === "number" ? `${b.annotated}/${b.total} 章（缺 ${b.missing}）` : `${b.annotated ?? "?"}`;
       console.log(`  ✓ ${b.name}：${progress}${b.note ? `（${b.note}）` : ""}`);
     }
   } else {
-    console.log("【已建库】无");
+    console.log("【外部知识库（exproject）】无");
+  }
+
+  if (myBuilt.length) {
+    console.log("【我的作品（myproject）】");
+    for (const b of myBuilt) {
+      const progress = typeof b.annotated === "number" ? `${b.annotated}/${b.total} 章（缺 ${b.missing}）` : `${b.annotated ?? "?"}`;
+      console.log(`  ✓ ${b.name}：${progress}${b.note ? `（${b.note}）` : ""}`);
+    }
+  } else {
+    console.log("【我的作品（myproject）】无");
   }
 
   console.log("");
   if (s.unbuilt.length) {
-    console.log("【未建库语料】（corpus 有语料，store 无对应 project）");
+    console.log("【未建库语料】（corpus 有语料，两域无对应 project）");
     for (const n of s.unbuilt) {
-      console.log(`  ✗ ${n} —— 可执行建库：node cli.mjs annotate --corpus=${n} --all`);
+      console.log(`  ✗ ${n} —— 可执行建库：node cli.mjs annotate --corpus=${n} --all --domain=ex`);
     }
     console.log(`\n共 ${s.unbuilt.length} 个未建库语料。`);
   } else {
@@ -178,9 +190,15 @@ function runCheck(args) {
     console.error("[cli] check 需要 project：check <project> [章号] [--syntax-only]");
     return false;
   }
-  const projectDir = path.join(storeDir, `${project}project`);
+  let projectDir;
+  try {
+    projectDir = projectRoot(project);
+  } catch (err) {
+    report(err);
+    return false;
+  }
   if (!fs.existsSync(projectDir)) {
-    console.error(`[cli] project 不存在: ${project}project（store/ 下无此目录）`);
+    console.error(`[cli] project 不存在: ${project}（两域均无）`);
     return false;
   }
 
@@ -199,26 +217,40 @@ function runCheck(args) {
 
 /**
  * 标注任务（事实层两往返）：
- *   node cli.mjs annotate <project> --all           → 全章标注
- *   node cli.mjs annotate <project> --chapter=3      → 指定章（可逗号分隔多章）
+ *   node cli.mjs annotate <project> --all [--domain=ex|my]    → 全章标注
+ *   node cli.mjs annotate <project> --chapter=3 [--domain=ex|my]
  *   node cli.mjs annotate <project> --chapter=3,4,5
+ *   --domain 默认 ex（外部语料建库）；--domain=my 建"我的作品"项目（禁止同名）
  */
 function runAnnotate(args) {
   const { positional, options } = parseArgs(args);
   const project = positional[0];
   const all = !!options.all;
   const chapter = options.chapter ?? null;
+  const domain = options.domain ?? DOMAIN.EX;
 
   if (!project) {
-    console.error("[cli] annotate 需要 project：annotate <project> --all | annotate <project> --chapter=N[,M...]");
+    console.error("[cli] annotate 需要 project：annotate <project> --all | annotate <project> --chapter=N[,M...] [--domain=ex|my]");
     return false;
   }
   if (!all && !chapter) {
     console.error("[cli] annotate 需指定 --all 或 --chapter=N（annotate 是 LLM 标注，必须明确范围）");
     return false;
   }
+  if (domain !== DOMAIN.MY && domain !== DOMAIN.EX) {
+    console.error(`[cli] --domain 非法：${domain}（my=我的作品 / ex=外部知识库）`);
+    return false;
+  }
 
-  const moduleArgs = ["--corpus=" + project];
+  // 首次建库：createProject 创建项目目录（禁止同名：两域已存在同名则报错）
+  try {
+    createProject(project, domain);
+  } catch (err) {
+    report(err);
+    return false;
+  }
+
+  const moduleArgs = ["--corpus=" + project, "--domain=" + domain];
   if (all) moduleArgs.push("--all");
   else for (const n of chapter.split(",")) moduleArgs.push("--chapter=" + n.trim());
   return runModule("host-exec.mjs", moduleArgs);
@@ -239,9 +271,15 @@ function runAggregate(args) {
     console.error("[cli] aggregate 需要 project：aggregate <project> [--full] [--finalize-only]");
     return false;
   }
-  const projectDir = path.join(storeDir, `${project}project`);
+  let projectDir;
+  try {
+    projectDir = projectRoot(project);
+  } catch (err) {
+    report(err);
+    return false;
+  }
   if (!fs.existsSync(projectDir)) {
-    console.error(`[cli] project 不存在: ${project}project`);
+    console.error(`[cli] project 不存在: ${project}（两域均无）`);
     return false;
   }
 
@@ -269,9 +307,15 @@ function runFix(args) {
     console.error("[cli] fix 需要 project：fix <project> <章号> | fix <project> --aggregates [--dry-run]");
     return false;
   }
-  const projectDir = path.join(storeDir, `${project}project`);
+  let projectDir;
+  try {
+    projectDir = projectRoot(project);
+  } catch (err) {
+    report(err);
+    return false;
+  }
   if (!fs.existsSync(projectDir)) {
-    console.error(`[cli] project 不存在: ${project}project`);
+    console.error(`[cli] project 不存在: ${project}（两域均无）`);
     return false;
   }
 
@@ -293,8 +337,8 @@ function runFix(args) {
 /* ================= 任务路由 ================= */
 
 const TASK_HELP = {
-  kb: "扫描语料 vs store 头文档，对比建库状态",
-  annotate: "标注：annotate <project> --all | --chapter=N[,M...]",
+  kb: "扫描语料 vs store 两域头文档，对比建库状态",
+  annotate: "标注：annotate <project> --all | --chapter=N[,M...] [--domain=ex|my]",
   aggregate: "聚合：aggregate <project> [--full] [--finalize-only]",
   check: "校验：check [project] [--chapter=N] [--syntax-only]",
   fix: "修复：fix <project> <章号> | fix <project> --aggregates [--dry-run]",
@@ -317,15 +361,16 @@ NovelyWrite 统一 CLI
 示例：
   node cli.mjs kb
   node cli.mjs "建立知识库"
-  node cli.mjs annotate 红楼梦 --all
+  node cli.mjs annotate 大王饶命 --all
   node cli.mjs annotate 大王饶命 --chapter=88,89,90
-  node cli.mjs aggregate 红楼梦
-  node cli.mjs aggregate 红楼梦 --full
-  node cli.mjs check 红楼梦
-  node cli.mjs check 红楼梦 --chapter=1
-  node cli.mjs check 红楼梦 --syntax-only
-  node cli.mjs fix 红楼梦 83
-  node cli.mjs fix 红楼梦 --aggregates --dry-run
+  node cli.mjs annotate 我的书 --all --domain=my
+  node cli.mjs aggregate 大王饶命
+  node cli.mjs aggregate 大王饶命 --full
+  node cli.mjs check 大王饶命
+  node cli.mjs check 大王饶命 --chapter=1
+  node cli.mjs check 大王饶命 --syntax-only
+  node cli.mjs fix 大王饶命 83
+  node cli.mjs fix 大王饶命 --aggregates --dry-run
 `);
 }
 

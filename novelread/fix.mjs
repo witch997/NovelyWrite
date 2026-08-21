@@ -27,7 +27,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { checkJsonText } from "./verify-json.mjs";
 import { deriveChapter } from "./derive-chapter.mjs";
-import { storeDir } from "../shared/paths.mjs";
+import { projectRoot } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -43,7 +43,7 @@ if (!project || (!Number.isInteger(ch) && !aggregatesMode)) {
   process.exit(2);
 }
 
-const projectDir = path.join(storeDir, `${project}project`);
+const projectDir = projectRoot(project); // 域感知：两域自动探测
 const chStr = aggregatesMode ? "" : String(ch).padStart(4, "0");
 
 /* ---------- 枚举（对齐 specs 契约） ---------- */

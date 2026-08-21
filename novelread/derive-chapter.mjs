@@ -19,7 +19,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { checkJsonText } from "./verify-json.mjs";
-import { storeDir } from "../shared/paths.mjs";
+import { projectRoot } from "../shared/paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -122,7 +122,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const project = args.find((a) => !a.startsWith("--"));
   const chNum = Number(args.find((a) => /^\d+$/.test(a)));
   const doAll = args.includes("--all");
-  const projectDir = path.join(storeDir, `${project}project`);
+  const projectDir = projectRoot(project); // 域感知：两域自动探测
   if (!fs.existsSync(projectDir)) { console.error(`project 不存在: ${projectDir}`); process.exit(2); }
 
   if (doAll) {

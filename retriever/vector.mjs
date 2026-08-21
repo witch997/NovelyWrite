@@ -1,7 +1,7 @@
 /**
  * vector.mjs — 向量通道（语义召回）
  *
- * 数据源：store/派生/向量/（由 build-derived.mjs 构建）
+ * 数据源：<书>project/derived/vector/（由 build-derived.mjs 构建，每书一份）
  *   - index.json：embedVersion + 每章 {project, chapter, file, shotCount}
  *   - 每章一个向量文件：{vectors: [{project, shotId, type, funcs, label, chapter, sentenceIds, embedding}]}
  *
@@ -11,52 +11,52 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { vectorDir, vectorIndexFile, cosine } from "./rag-core.mjs";
+import { vectorDirOf, vectorIndexFileOf, cosine } from "./rag-core.mjs";
 import { ensureEmbedReady, createEmbedClient } from "./embed.mjs";
+import { listProjects } from "../shared/paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-let _indexCache = null;
-let _indexKey = null;
+const _indexCache = new Map(); // project → index
+const _allVectorsCache = new Map(); // project → vectors[]
 
-export function loadVectorIndex() {
-  if (!fs.existsSync(vectorIndexFile)) return null;
+/** 加载单书向量索引 */
+export function loadVectorIndex(project) {
+  const file = vectorIndexFileOf(project);
+  if (!fs.existsSync(file)) return null;
   try {
-    const index = JSON.parse(fs.readFileSync(vectorIndexFile, "utf-8"));
-    if (_indexCache && _indexKey === index.updatedAt) return _indexCache;
-    _indexCache = index;
-    _indexKey = index.updatedAt;
+    const index = JSON.parse(fs.readFileSync(file, "utf-8"));
+    const cached = _indexCache.get(project);
+    if (cached && cached.updatedAt === index.updatedAt) return cached;
+    _indexCache.set(project, index);
     return index;
   } catch {
     return null;
   }
 }
 
-let _allVectors = null;
-let _allVectorsKey = null;
-
-/** 加载全部向量（进程内缓存，按 index.updatedAt 失效） */
-export function loadAllVectors() {
-  const index = loadVectorIndex();
+/** 加载单书全部向量（进程内缓存，按 index.updatedAt 失效） */
+export function loadAllVectors(project) {
+  const index = loadVectorIndex(project);
   if (!index) return null;
-  if (_allVectors && _allVectorsKey === index.updatedAt) return _allVectors;
+  const cached = _allVectorsCache.get(project);
+  if (cached && cached.key === index.updatedAt) return cached.vectors;
   const all = [];
   for (const meta of Object.values(index.chapters ?? {})) {
-    const file = path.resolve(vectorDir, meta.file);
+    const file = path.resolve(vectorDirOf(project), meta.file);
     if (!fs.existsSync(file)) continue;
     try {
       const payload = JSON.parse(fs.readFileSync(file, "utf-8"));
       for (const v of payload.vectors ?? []) all.push(v);
     } catch { /* 跳过损坏 */ }
   }
-  _allVectors = all;
-  _allVectorsKey = index.updatedAt;
+  _allVectorsCache.set(project, { key: index.updatedAt, vectors: all });
   return all;
 }
 
-/** 向量库版本信息（供调用方判断可用性） */
-export function vectorIndexInfo() {
-  const index = loadVectorIndex();
+/** 向量库版本信息（供调用方判断可用性；按书） */
+export function vectorIndexInfo(project) {
+  const index = loadVectorIndex(project);
   if (!index) return null;
   return {
     updatedAt: index.updatedAt,
@@ -67,7 +67,7 @@ export function vectorIndexInfo() {
 }
 
 /**
- * 向量通道召回
+ * 向量通道召回（支持多书：各书独立向量库，分别余弦后合并）
  * @param {object} query { label? | text? }
  * @param {object} opts { topk?, projects? }
  * @returns {Promise<object[]>} hits: {shot, score, source:"vec"}
@@ -88,10 +88,8 @@ export async function vectorRecall(query, opts = {}) {
     // 不 console.warn（每次检索都刷屏）——降级信号经 result.warnings 返回，调用方/LLM 可见
     return { ok: false, ...signal, hits: [] };
   }
-  const embedCfg = ready.cfg;
 
-  const all = loadAllVectors();
-  if (!all || all.length === 0) return []; // 向量库未构建 → 空
+  const projects = opts.projects?.length ? opts.projects : listProjects();
 
   let queryVec;
   try {
@@ -103,13 +101,15 @@ export async function vectorRecall(query, opts = {}) {
   }
   if (!queryVec) return [];
 
-  // 限定 project（可选）
-  const pool = opts.projects && opts.projects.length
-    ? all.filter((v) => opts.projects.includes(v.project))
-    : all;
-
-  const ranked = pool
-    .map((v) => ({ shot: v, score: cosine(queryVec, v.embedding) }))
-    .sort((a, b) => b.score - a.score);
+  // 多书：各书独立向量库，分别余弦 → 合并
+  const ranked = [];
+  for (const project of projects) {
+    const all = loadAllVectors(project);
+    if (!all || all.length === 0) continue;
+    for (const v of all) {
+      ranked.push({ shot: v, score: cosine(queryVec, v.embedding) });
+    }
+  }
+  ranked.sort((a, b) => b.score - a.score);
   return ranked.slice(0, opts.topk ?? 2).map((r) => ({ shot: r.shot, score: r.score, source: "vec" }));
 }

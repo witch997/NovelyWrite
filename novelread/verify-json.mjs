@@ -23,7 +23,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { storeDir } from "../shared/paths.mjs";
+import { projectRoot } from "../shared/paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -195,9 +195,9 @@ function walkJson(dir) {
 
 function main() {
   const args = process.argv.slice(2);
-  const project = args.find((a) => !a.startsWith("--")) ?? "红楼梦";
+  const project = args.find((a) => !a.startsWith("--")) ?? "大王饶命";
   const listOnly = args.includes("--list");
-  const projectDir = path.join(storeDir, `${project}project`);
+  const projectDir = projectRoot(project); // 域感知：两域自动探测
   if (!fs.existsSync(projectDir)) { console.error(`project 不存在: ${projectDir}`); process.exit(2); }
 
   const files = walkJson(projectDir);
