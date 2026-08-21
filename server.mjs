@@ -227,6 +227,64 @@ function apiConfigPut(body) {
   return { ok: true, summary: loadConfigSummary() };
 }
 
+/* ================= 模型列表（从 API 读可用模型）/ API Key 填写 ================= */
+
+/** 调 OpenAI 兼容 /models 端点获取可用模型列表 */
+async function fetchModels(baseUrl, apiKey, kind) {
+  try {
+    const res = await fetch(`${baseUrl}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { ok: false, reason: `HTTP ${res.status} ${text.slice(0, 120)}` };
+    }
+    const data = await res.json();
+    const models = (data.data ?? []).map((m) => m.id).filter(Boolean).sort();
+    return { ok: true, kind, baseUrl, models };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+}
+
+/**
+ * GET /api/models/(chat|embed) — 从 API 读可用模型（供前端选择器）
+ * 无 apiKey → {ok:false, reason:"缺少…API Key"}
+ */
+async function apiModels(kind) {
+  const raw = loadRawConfig() ?? {};
+  if (kind === "embed") {
+    const e = raw.embed ?? {};
+    const key = e.apiKey || process.env.NOVELYWRITE_EMBED_API_KEY;
+    if (!key) return { ok: false, kind, reason: "缺少向量 API Key（config.json embed.apiKey 或 NOVELYWRITE_EMBED_API_KEY）" };
+    const base = (e.baseUrl ?? "https://api.siliconflow.cn/v1").replace(/\/+$/, "");
+    return await fetchModels(base, key, "embed");
+  }
+  const c = raw.chat ?? {};
+  const key = c.apiKey || process.env.NOVELYWRITE_CHAT_API_KEY;
+  if (!key) return { ok: false, kind, reason: "缺少对话 API Key（config.json chat.apiKey 或 NOVELYWRITE_CHAT_API_KEY）" };
+  const base = (c.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
+  return await fetchModels(base, key, "chat");
+}
+
+/** POST /api/config/keys {chatApiKey?, embedApiKey?} — 填写 API Key（写入本地 config.json） */
+function apiSaveKeys(body) {
+  const raw = loadRawConfig() ?? {};
+  if (typeof body?.chatApiKey === "string" && body.chatApiKey.trim()) {
+    raw.chat = { ...(raw.chat ?? {}), apiKey: body.chatApiKey.trim() };
+  }
+  if (typeof body?.embedApiKey === "string" && body.embedApiKey.trim()) {
+    raw.embed = { ...(raw.embed ?? {}), apiKey: body.embedApiKey.trim() };
+  }
+  try {
+    fs.writeFileSync(configPath, JSON.stringify(raw, null, 4), "utf-8");
+  } catch (err) {
+    throw new NovelyError("CONFIG_INVALID", { context: { cause: err.message } });
+  }
+  return { ok: true };
+}
+
 /* ================= 书/章节 API（我的作品 mybook 资产区：用户原稿实时持久化） =================
  * 布局：mybook/<书>/第XXXX章.md（Markdown 原稿；首行 "# 标题" 为可选章节标题约定）
  * 新建书 = createProject(my) 建 store 骨架 + mkdir mybook/<书>（两处）
@@ -472,6 +530,8 @@ const ROUTES = [
   { m: "POST", p: /^\/api\/search$/, h: async (_m, body) => apiSearch(body) },
   { m: "GET", p: /^\/api\/config$/, h: () => apiConfigGet() },
   { m: "PUT", p: /^\/api\/config$/, h: (_m, body) => apiConfigPut(body) },
+  { m: "GET", p: /^\/api\/models\/(chat|embed)$/, h: async (m) => apiModels(m[1]) },
+  { m: "POST", p: /^\/api\/config\/keys$/, h: (_m, b) => apiSaveKeys(b) },
   { m: "POST", p: /^\/api\/system\/open-folder$/, h: (_m, body) => apiOpenFolder(body) },
   { m: "GET", p: /^\/api\/sessions$/, h: () => apiSessions() },
   { m: "GET", p: /^\/api\/sessions\/([^/]+)$/, h: (m) => apiSessionDetail(decodeURIComponent(m[1])) },

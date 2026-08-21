@@ -91,11 +91,33 @@
       <button class="btn btn-sm" id="btnSettingsClose">✕</button>
     </div>
     <div class="modal-body">
-      <div class="setting-group-title">LLM(写作模型)</div>
+      <div class="setting-group-title">LLM · 对话（建库 annotate 用）</div>
       <div class="setting-group">
         <label class="setting-row">
-          <span>写作模型(shot-writing)</span>
-          <input id="setShotModel" placeholder="如 deepseek-v4-pro">
+          <span>对话 API Key</span>
+          <input id="setChatApiKey" type="password" class="input" placeholder="sk-…（留空=不修改）" autocomplete="off">
+        </label>
+        <label class="setting-row">
+          <span>建库模型（annotate）</span>
+          <select id="setAnnotateModel" class="input"><option value="">(加载中…)</option></select>
+        </label>
+      </div>
+      <div class="setting-group-title">LLM · 向量（embed 检索）</div>
+      <div class="setting-group">
+        <label class="setting-row">
+          <span>向量 API Key</span>
+          <input id="setEmbedApiKey" type="password" class="input" placeholder="sk-…（留空=不修改）" autocomplete="off">
+        </label>
+        <label class="setting-row">
+          <span>向量模型（embed）</span>
+          <select id="setEmbedModel" class="input"><option value="">(加载中…)</option></select>
+        </label>
+      </div>
+      <div class="setting-group-title">LLM · 写作（shot-writing 工作台）</div>
+      <div class="setting-group">
+        <label class="setting-row">
+          <span>写作模型</span>
+          <select id="setShotModel" class="input"><option value="">(加载中…)</option></select>
         </label>
         <label class="setting-row">
           <span>写作温度</span>

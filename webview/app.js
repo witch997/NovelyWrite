@@ -250,8 +250,39 @@
     }
   }
 
-  /* ================= 配置状态 + 模型选择器（顶栏右侧） ================= */
-  const PRESET_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"];
+  /* ================= 配置状态 + 模型选择器（顶栏右侧，从 API 读可用模型） ================= */
+
+  /** 从 API 读可用模型（kind=chat|embed）；无 key 时返回 {ok:false,reason} */
+  async function fetchModels(kind) {
+    try {
+      return await api(`/api/models/${kind}`);
+    } catch (e) {
+      return { ok: false, reason: e.message };
+    }
+  }
+
+  /** 填充 select：模型列表 + 当前值；空/无 key → 提示占位 */
+  function fillModelSelect(sel, data, current) {
+    sel.innerHTML = "";
+    if (!data?.ok) {
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = `(未配置 Key：${(data?.reason || "读取失败").slice(0, 40)})`;
+      sel.appendChild(o);
+      sel.disabled = true;
+      return;
+    }
+    sel.disabled = false;
+    const opts = new Set([...(data.models || []), ...(current ? [current] : [])]);
+    for (const m of opts) {
+      const o = document.createElement("option");
+      o.value = m;
+      o.textContent = m;
+      sel.appendChild(o);
+    }
+    if (current) sel.value = current;
+    else if (data.models?.length) sel.value = data.models[0];
+  }
 
   async function loadConfig() {
     try {
@@ -265,18 +296,10 @@
         statusEl.textContent = "⚠ LLM 未配置(无 apiKey)";
         statusEl.className = "env-status warn";
       }
-      // 模型选择器：预设 + 当前配置模型
-      const current = cfg?.features?.["shot-writing"]?.chat?.model || cfg?.chat?.model || "";
-      const sel = $("modelSelect");
-      const opts = new Set([...PRESET_MODELS, ...(current ? [current] : [])]);
-      sel.innerHTML = "";
-      for (const m of opts) {
-        const o = document.createElement("option");
-        o.value = m;
-        o.textContent = m;
-        sel.appendChild(o);
-      }
-      if (current) sel.value = current;
+      // 顶栏写作模型选择器：选项从 API 读（chat 模型列表）
+      const current = cfg?.features?.["shot-writing"]?.chat?.model || "";
+      const data = await fetchModels("chat");
+      fillModelSelect($("modelSelect"), data, current);
     } catch {
       $("envStatus").textContent = "服务未连接";
       $("envStatus").className = "env-status warn";
@@ -606,11 +629,18 @@
     $("settingsMask").classList.remove("open");
   }
 
-  /** 加载当前配置到表单(读 GET /api/config) + 自动保存间隔(localStorage) */
+  /** 加载当前配置到表单 + 从 API 读模型填充三个选择器 + 自动保存间隔 */
   async function loadSettingsForm() {
     try {
       const cfg = await api("/api/config");
-      $("setShotModel").value = cfg?.features?.["shot-writing"]?.chat?.model || cfg?.chat?.model || "";
+      // Key 状态提示（不回显密钥）
+      $("setChatApiKey").placeholder = cfg?.chat?.apiKeySet ? "已配置 ✓（留空不修改）" : "未配置，填入 sk-…";
+      $("setEmbedApiKey").placeholder = cfg?.embed?.apiKeySet ? "已配置 ✓（留空不修改）" : "未配置，填入 sk-…";
+      // 模型选择器（从 API 读）
+      const [chatData, embedData] = await Promise.all([fetchModels("chat"), fetchModels("embed")]);
+      fillModelSelect($("setAnnotateModel"), chatData, cfg?.chat?.model || "");
+      fillModelSelect($("setEmbedModel"), embedData, cfg?.embed?.model || "");
+      fillModelSelect($("setShotModel"), chatData, cfg?.features?.["shot-writing"]?.chat?.model || "");
       $("setShotTemp").value = cfg?.features?.["shot-writing"]?.chat?.temperature ?? cfg?.chat?.temperature ?? "";
     } catch (e) {
       toast(`读取配置失败: ${e.message}`);
@@ -629,18 +659,34 @@
     }
   }
 
-  /** 保存设置(PUT /api/config 写 features.shot-writing.chat) + 自动保存间隔(localStorage) */
+  /** 保存设置：填 Key(POST /api/config/keys) + 模型/温度(PUT /api/config) + 自动保存间隔 */
   async function saveSettings() {
-    const body = { features: {} };
-    const model = $("setShotModel").value.trim();
+    // 1. API Key（填了才写；写后重新加载模型列表）
+    const chatKey = $("setChatApiKey").value.trim();
+    const embedKey = $("setEmbedApiKey").value.trim();
+    let wroteKey = false;
+    if (chatKey || embedKey) {
+      await api("/api/config/keys", {
+        method: "POST",
+        body: JSON.stringify({ chatApiKey: chatKey || undefined, embedApiKey: embedKey || undefined }),
+      });
+      wroteKey = true;
+    }
+    // 2. 模型与温度
+    const body = { chat: {}, embed: {}, features: {} };
+    const annotateModel = $("setAnnotateModel").value;
+    const embedModel = $("setEmbedModel").value;
+    const shotModel = $("setShotModel").value;
     const temp = parseFloat($("setShotTemp").value);
-    if (model || !Number.isNaN(temp)) {
-      body.features["shot-writing"] = { chat: {} };
-      if (model) body.features["shot-writing"].chat.model = model;
-      if (!Number.isNaN(temp)) body.features["shot-writing"].chat.temperature = temp;
+    if (annotateModel) body.chat.model = annotateModel;
+    if (embedModel) body.embed.model = embedModel;
+    if (shotModel) body.features["shot-writing"] = { chat: { model: shotModel } };
+    if (!Number.isNaN(temp)) {
+      body.features["shot-writing"] = body.features["shot-writing"] ?? {};
+      body.features["shot-writing"].chat = { ...(body.features["shot-writing"].chat ?? {}), temperature: temp };
     }
     await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
-    // 自动保存间隔
+    // 3. 自动保存间隔
     const sel = $("setAutoSave");
     let min = sel.value === "custom" ? parseInt($("setAutoSaveCustom").value, 10) : Number(sel.value);
     if (!Number.isFinite(min) || min < 0) min = 5;
@@ -649,6 +695,7 @@
     toast(`✅ 设置已保存（自动保存 ${min > 0 ? min + " 分钟" : "关闭"}）`);
     loadConfig(); // 刷新顶栏模型选择器
     closeSettings();
+    if (wroteKey) toast("✅ API Key 已保存（模型列表已刷新）");
   }
 
   /* ================= 打开文件夹 ================= */
