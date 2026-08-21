@@ -73,7 +73,7 @@ export function dictVersion(project) {
  * @param {string} project 用哪本书的词典切
  */
 export function tokenize(text, project) {
-  const clean = (text ?? "").replace(/[\[\]（）()【】「」、，。！？：；“”"'《》\s\n]/g, " ");
+  const clean = (text ?? "").replace(/[\[\]（）()【】「」『』、，。！？：；“”‘’"'—–·〈〉《》\s\n]/g, " ");
   const { byFirstChar } = loadEntityDict(project);
   const tokens = [];
   let remaining = clean;
@@ -199,7 +199,7 @@ export function labelRecall(query, opts = {}) {
  */
 export function tokenRecall(query, opts = {}) {
   const shots = opts.shots ?? scanAllShots();
-  const q = (query.text ?? "").replace(/[，。！？…、；：""''（）《》\s]/g, "");
+  const q = (query.text ?? "").replace(/[，。！？…、；：""''“”‘’「」『』—–·〈〉（）《》\s]/g, "");
   if (q.length < 2) return [];
   const topk = opts.topk ?? 2;
 
