@@ -451,15 +451,17 @@
     const spH1 = document.querySelector('.splitter-h[data-split="aiInput"]');
     const spH2 = document.querySelector('.splitter-h[data-split="aiRef"]');
 
-    // 恢复记忆尺寸
+    // 恢复记忆尺寸（右栏内行高同时做面板边界保护，防历史越界值残留）
     const savedL = Number(localStorage.getItem("nw-left-w"));
     const savedR = Number(localStorage.getItem("nw-right-w"));
     if (savedL > 0) left.style.width = Math.min(savedL, layoutW() * 0.6) + "px";
     if (savedR > 0) right.style.width = Math.min(savedR, layoutW() * 0.6) + "px";
     const savedH1 = Number(localStorage.getItem("nw-ai-input-h"));
     const savedH2 = Number(localStorage.getItem("nw-ai-ref-h"));
-    if (savedH1 > 0) inputSec.style.height = savedH1 + "px";
-    if (savedH2 > 0) refSec.style.height = savedH2 + "px";
+    const panel = document.getElementById("aiPanel");
+    const panelH = panel.getBoundingClientRect().height || 600;
+    if (savedH1 > 0) inputSec.style.height = Math.min(savedH1, panelH - 220) + "px";
+    if (savedH2 > 0) refSec.style.height = Math.min(savedH2, panelH - 150) + "px";
 
     /** 列宽拖拽（左栏向右增宽 / 右栏向左增宽） */
     function dragCol(spEl, target, saveKey, isLeft) {
@@ -484,16 +486,23 @@
       });
     }
 
-    /** 行高拖拽（调整上块高度，下块自适应） */
+    /** 行高拖拽（调整上块高度，下块自适应；限制在面板内，防拖穿边界） */
     function dragRow(spEl, target, saveKey) {
       spEl.addEventListener("mousedown", (e) => {
         e.preventDefault();
         spEl.classList.add("dragging");
         const startY = e.clientY;
         const startH = target.getBoundingClientRect().height;
+        const panel = document.getElementById("aiPanel");
         const move = (ev) => {
-          const h = Math.max(60, Math.min(startH + (ev.clientY - startY), window.innerHeight * 0.5));
-          target.style.height = h + "px";
+          let h = startH + (ev.clientY - startY);
+          // 上限：面板高度 − 其余区块最小占用（参考书区≈130 / 结果区 90 + 分隔条）
+          const others = [...panel.querySelectorAll(".ai-sec")].filter((el) => el !== target);
+          const minOthers = others.reduce((a, el) => a + (el.id === "aiResultSec" ? 90 : 130), 0);
+          const splitH = panel.querySelectorAll(".splitter-h").length * 5;
+          const maxH = panel.getBoundingClientRect().height - minOthers - splitH;
+          h = Math.min(h, maxH);
+          target.style.height = Math.max(60, h) + "px";
         };
         const up = () => {
           spEl.classList.remove("dragging");
