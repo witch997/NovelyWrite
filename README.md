@@ -11,8 +11,9 @@ AI 辅助小说拆解与分镜参考写作工具链：把小说原文解析为�
 - **聚合（aggregate）**：标注 → 派生数据（词典 / 向量索引等），默认增量、`--full` 全量逃生门
 - **校验（check）**：JSON 结构 / 章节一致性 / 聚合收尾检查
 - **修复（fix）**：章级修复、聚合层修复（`--dry-run` 预览）
-- **检索（retriever）**：三通道召回——label（结构）/ token（词重叠）/ vec（embedding 语义）
-- **分镜参考写作（shot-writing，功能层）**：输入意图 → 结构化分镜序列 → 三通道召回参考 → LLM 写作
+- **检索（retriever）**：三通道召回——label（结构）/ token（词重叠）/ vec（embedding 语义），域化布局（myproject/exproject 可按书/按域组合）
+- **分镜参考写作（shot-writing，功能层）**：输入意图 → 结构化分镜序列 → 三通道召回参考 → 逐镜写作 + 全文整合（时空映射参考 / 双防幻觉 / 对话修复）
+- **Web 工作台（server.mjs + webview）**：node:http 零依赖服务，浏览器三栏工作台（大纲 / Vditor 编辑器 / AI 参考）
 - **自然语言入口**：`node cli.mjs "把红楼梦建立知识库"` 这类指令可被意图识别路由到对应任务
 
 ## 架构（四层）
@@ -20,7 +21,7 @@ AI 辅助小说拆解与分镜参考写作工具链：把小说原文解析为�
 | 层 | 目录 | 职责 |
 |---|---|---|
 | L1 语料处理 | `novelread/` | 原文解析 → 标注产出（两往返 + 硬闸门） |
-| L2 数据访问 | `store/` | JSON 数据 + `project-meta.json`（头文档） |
+| L2 数据访问 | `store/` | JSON 数据 + `project-meta.json`（头文档），域化（myproject/exproject） |
 | L3 检索器 | `retriever/` | 三通道召回（label / token / vec） |
 | L4 功能层 | `features/` | 消费 L2/L3 做业务（拆书报告 / 分镜写作） |
 
@@ -29,17 +30,20 @@ AI 辅助小说拆解与分镜参考写作工具链：把小说原文解析为�
 ```
 NovelyWrite/
 ├── cli.mjs                 # 统一 CLI 入口（显式命令 + 自然语言意图）
-├── config.json             # 本地配置（不入库，见「配置」节创建）
+├── server.mjs              # Web 服务入口（node:http 内置，零依赖）
+├── webview/                # 前端（index.html / app.js / style.css / vendor/vditor）
+├── config.json             # 本地配置（不入库，含 chat/embed/features 段）
 ├── novelread/              # L1 语料处理（标注 / 聚合 / 校验 / 修复）
 │   ├── specs/              # 标注规范（卷纲 / 大事件 / 章节 / 分镜 / 句子）
 │   └── state/              # 运行时原始文本分章（不提交）
 ├── retriever/              # L3 三通道检索器
 ├── features/               # L4 功能层
-│   ├── report/             # 拆书报告（规划中）
-│   └── shot-writing/       # 分镜参考写作（会话机制 + 写作）
-├── shared/                 # 公共模块（路径 / 配置 / LLM / embedding / SKILL 切片）
+│   └── shot-writing/       # 分镜参考写作（preprocess / recall / writedraft）
+├── shared/                 # 公共模块（路径 / 配置 / LLM / embedding / 错误 / 任务）
+├── scripts/                # 迁移脚本（域化）
 ├── corpus/                 # 用户语料（自备，不提交）
-├── store/                  # 标注数据 / 派生索引（运行时生成，不提交）
+├── store/                  # 标注数据 / 派生索引（myproject / exproject，不提交）
+├── mybook/                 # 用户原稿（资产区，不提交）
 └── output/                 # 写作产物 / 报告（运行时生成，不提交）
 ```
 
@@ -124,24 +128,38 @@ node cli.mjs "校验"
 ```
 用户输入（任意）
   ↓ ① preprocess：输入 → 结构化分镜序列 + 会话落盘（sessions/<session-id>/）
-  ↓ ② 召回：逐镜 retriever.retrieve() 三通道（label / token / vec）
-  ↓ ③ 回源：hits → 句子文本 → 参考上下文
-  ↓ ④ 写作：意图 + 参考 → 分镜文本 → draft → 复制到 output/
+  ↓ ② recall：逐镜 retriever.retrieve() 三通道（label / token / vec）
+  ↓ ③ 逐镜写作：前后镜上下文 + 时空映射参考 + 动态字数 + 温度随机 + 双防幻觉
+  ↓ ④ 全文整合：最小改动 + 去重 + 时间线 + 防幻觉 + 对话修复（脚本）
+  ↓ 成稿 → output/<项目>.final.txt
 ```
 
 产出：
 
-- 会话存档：`features/shot-writing/sessions/<session-id>/`
-- 用户可读稿：`output/<session-id>.draft.txt`（写作产物，不落 store）
+- 会话存档：`features/shot-writing/sessions/<session-id>/`（input/shots/recalls/draft）
+- 用户成稿：`output/<项目>.final.txt`（纯正文，不落 store）
+
+## Web 工作台（server.mjs）
+
+```
+node server.mjs [--port=3081] [--host=127.0.0.1] [--open]
+  --port=0 → 动态端口（系统分配，杜绝冲突）
+浏览器访问 → webview 三栏工作台（大纲 / Vditor 编辑器 / AI 参考）
+接口：/api/projects /api/search /api/config /api/sessions /api/tasks/*
+```
 
 ## 文档
 
 - `打包分发指南.md`：代码根 / 数据根分离、环境变量注入、分发部署说明
 - `features/README.md`：功能层（L4）设计
 - `retriever/README.md`：三通道检索器（L3）设计
-- `features/shot-writing/README.md`：分镜参考写作
+- `features/shot-writing/README.md`：分镜参考写作（含当前写作逻辑）
 - `novelread/specs/`：标注规范（卷纲 / 大事件 / 章节表 / 分镜 / 句子）
+
+## 交流
+
+- QQ 交流群：**1106526576**
 
 ## License
 
-暂未指定 —— 发布前请选择开源协议并添加 `LICENSE` 文件。
+[MIT](LICENSE) © witch997
