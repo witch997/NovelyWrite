@@ -136,6 +136,36 @@
     }
   }
 
+  /* ================= 参考书池(跨书参考源选择,可多选) ================= */
+  const refPool = new Map(); // name → {checked, domain}
+  async function loadRefPool() {
+    try {
+      const d = await api("/api/projects");
+      const list = (d.projects || []).sort((a, b) => a.name.localeCompare(b.name, "zh"));
+      const box = $("refPoolList");
+      if (!list.length) { box.innerHTML = '<span class="muted">无已建库项目(先 annotate 建库)</span>'; return; }
+      box.innerHTML = "";
+      for (const p of list) {
+        const label = `${p.name}（${p.domain === "my" ? "我的" : "外部"}${p.meta?.chaptersAnnotated ? ` ${p.meta.chaptersAnnotated}章` : ""}）`;
+        refPool.set(p.name, { checked: false, domain: p.domain });
+        const item = document.createElement("label");
+        item.className = "ref-pool-item";
+        item.innerHTML = `<input type="checkbox" data-book="${escapeHtml(p.name)}"> <span>${escapeHtml(label)}</span>`;
+        item.querySelector("input").addEventListener("change", (e) => {
+          const b = refPool.get(p.name);
+          if (b) b.checked = e.target.checked;
+        });
+        box.appendChild(item);
+      }
+    } catch {
+      $("refPoolList").innerHTML = '<span class="muted">参考书加载失败</span>';
+    }
+  }
+  /** 收集勾选的参考书（数组；空 = 全库跨书） */
+  function selectedRefBooks() {
+    return [...refPool.entries()].filter(([, v]) => v.checked).map(([name]) => name);
+  }
+
   /* ================= AI 写作流程 ================= */
   async function startTask(kind, body) {
     const { taskId } = await api(`/api/tasks/${kind}`, { method: "POST", body: JSON.stringify(body) });
@@ -230,18 +260,20 @@
   async function writeDraft() {
     if (!state.sessionId) { aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">先生成分镜序列</div>'); return; }
     aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">正在召回参考 + 写作…(任务日志见底部)</div>');
+    const refBooks = selectedRefBooks(); // 勾选的参考书（空 = 全库跨书）
+    taskStatus.textContent = refBooks.length ? `参考源: ${refBooks.join(" + ")}` : "参考源: 全库跨书";
     try {
-      // 先 recall(装配参考)
-      const recallId = await startTask("recall", { session: state.sessionId, topk: 6 });
+      // 先 recall(装配参考, 限定所选参考书)
+      const recallId = await startTask("recall", { session: state.sessionId, topk: 6, projects: refBooks });
       pollTask(recallId, async (t) => {
         if (t.status !== "success") { taskStatus.textContent = "recall 失败"; return; }
         // 再 writedraft(写作成稿)
-        const draftId = await startTask("writedraft", { session: state.sessionId, project: "青山" });
+        const draftId = await startTask("writedraft", { session: state.sessionId, projects: refBooks });
         pollTask(draftId, (dt) => {
           if (dt.status === "success") {
             taskStatus.textContent = "✅ 成稿完成";
             aiResult.insertAdjacentHTML("beforeend",
-              `<div class="placeholder" style="color:var(--green)">✅ 成稿已生成: output/青山.final.txt</div>`);
+              `<div class="placeholder" style="color:var(--green)">✅ 成稿已生成(见任务日志/会话目录)</div>`);
           }
         });
       });
@@ -349,6 +381,7 @@
     applyTheme(localStorage.getItem("nw-theme") || "light");
     initEditor();
     loadConfig();
+    loadRefPool(); // 参考书池(跨书参考源选择)
     // 骨架演示:默认加一章
     addChapter();
     taskStatus.textContent = "就绪";

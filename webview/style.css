@@ -165,6 +165,20 @@ body {
   transition: border-color var(--dur) var(--ease);
 }
 #aiPrompt:focus { outline: none; border-color: var(--brand); }
+/* 参考书池(跨书参考源选择,可多选) */
+.ref-pool { padding: 10px 12px; border-bottom: 1px solid var(--border); background: var(--bg-elevated, var(--bg-base)); }
+.ref-pool-title { font-size: 11px; color: var(--label-tertiary); margin-bottom: 7px; }
+.ref-pool-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 108px; overflow-y: auto; }
+.ref-pool-item {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; color: var(--label-primary);
+  background: var(--bg-base); border: 1px solid var(--border);
+  border-radius: 6px; padding: 3px 9px; cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.ref-pool-item:hover { border-color: var(--border-strong); }
+.ref-pool-item input { accent-color: var(--brand); cursor: pointer; }
+.ref-pool-item:has(input:checked) { border-color: var(--brand); background: var(--bg-active); }
 .ai-result { padding: 12px; }
 .shot-card {
   background: var(--bg-base); border: 1px solid var(--border);

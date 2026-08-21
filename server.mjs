@@ -357,13 +357,25 @@ function taskArgsFor(kind, b) {
     case "recall":
       if (!b?.session) throw new NovelyError("ARG_REQUIRED", { context: { field: "session" } });
       a.push(`--session=${b.session}`);
-      if (b.project) a.push(`--project=${b.project}`);
+      // 参考源选择：body.projects（数组，多书）或 body.project（单书兼容）→ --project=A,B
+      {
+        const sel = Array.isArray(b.projects)
+          ? b.projects.filter((x) => typeof x === "string" && x.trim())
+          : (b.project ? [String(b.project)] : []);
+        if (sel.length) a.push(`--project=${sel.join(",")}`);
+      }
       if (b.topk) a.push(`--topk=${b.topk}`);
       break;
     case "writedraft":
       if (!b?.session) throw new NovelyError("ARG_REQUIRED", { context: { field: "session" } });
       a.push(`--session=${b.session}`);
-      if (b.project) a.push(`--project=${b.project}`);
+      // 参考源选择与 recall 一致（writedraft 消费 recalls.json，参数仅记录）
+      {
+        const sel = Array.isArray(b.projects)
+          ? b.projects.filter((x) => typeof x === "string" && x.trim())
+          : (b.project ? [String(b.project)] : []);
+        if (sel.length) a.push(`--project=${sel.join(",")}`);
+      }
       break;
   }
   return a;

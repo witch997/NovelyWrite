@@ -5,17 +5,22 @@
  * 职责：读 preprocess 产出的 shots.json（全部分镜需求），逐镜触发检索器三通道，
  *       回源参考分镜文本，装配 recalls.json（完整保留 shots + 每镜 refs）。
  *
+ * 参考源选择（跨书参考）：
+ *   --project=A,B  限定召回书（逗号分隔多书，跨域自动解析：myproject/exproject 都认）
+ *   --project=A --project=B  等价写法（多值）
+ *   不传 --project = 跨书全库召回（label 跨书噪声 + token/vec 全库）
+ *
  * 输出：sessions/<session-id>/recalls.json
- *   { sessionId, project, topk, generatedAt,
+ *   { sessionId, projects, topk, generatedAt,
  *     shots: [ { ...原分镜需求, refs: [{source,score,chapter,shotId,type,funcs,label,text}] } ] }
  *
  * 用法：
- *   node features/shot-writing/recall.mjs --session <session-id> --project <语料名> [--topk 6]
+ *   node features/shot-writing/recall.mjs --session <session-id> [--project=书A,书B] [--topk 6]
  */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT, storeDir, projectRoot } from "../../shared/paths.mjs";
+import { CODE_ROOT, storeDir, projectRoot, listProjects } from "../../shared/paths.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sessionsDir = path.join(__dirname, "sessions");
@@ -29,12 +34,30 @@ function argVal(name) {
   return i >= 0 && i + 1 < args.length ? args[i + 1] : null;
 }
 const sessionId = argVal("session");
-const project = argVal("project"); // 可选：限定单书召回；不传 = 跨书全库召回（label 跨书噪声）
 const topk = Number(argVal("topk") ?? "6");
 if (!sessionId) {
-  console.error('用法: node features/shot-writing/recall.mjs --session <session-id> [--project <语料名>] [--topk 6]\n  不传 --project = 跨书全库召回（label 跨书噪声 + token/vec 全库）');
+  console.error('用法: node features/shot-writing/recall.mjs --session <session-id> [--project=书A,书B] [--topk 6]\n  不传 --project = 跨书全库召回（label 跨书噪声 + token/vec 全库）');
   process.exit(2);
 }
+
+// 参考源：--project 支持逗号分隔多书 / 多次传入；解析为数组（空 = 全库）
+const rawProjects = [];
+for (const a of args) {
+  if (a.startsWith("--project=")) rawProjects.push(...a.slice("--project=".length).split(",").map((s) => s.trim()).filter(Boolean));
+}
+{
+  const i = args.indexOf("--project");
+  while (i >= 0 && i + 1 < args.length && !args[i + 1].startsWith("--")) {
+    const v = args[i + 1];
+    if (!v.startsWith("--")) rawProjects.push(...v.split(",").map((s) => s.trim()).filter(Boolean));
+    break;
+  }
+}
+// 去重 + 存在性校验（两域任一有即合法；不存在的书剔除并警告）
+const allBooks = new Set(listProjects());
+const unknown = rawProjects.filter((p) => !allBooks.has(p));
+for (const p of new Set(unknown)) console.warn(`  ⚠ 参考书不存在（已忽略）: ${p}（可用: ${[...allBooks].join(" / ")}）`);
+const projects = [...new Set(rawProjects)].filter((p) => allBooks.has(p));
 
 /* ---------- 读 shots.json（preprocess 产物） ---------- */
 const sessionDir = path.join(sessionsDir, sessionId);
@@ -44,7 +67,7 @@ if (!fs.existsSync(shotsPath)) {
   process.exit(1);
 }
 const { summary, shots } = JSON.parse(fs.readFileSync(shotsPath, "utf-8"));
-console.log(`[recall] 会话 ${sessionId} | 分镜需求 ${shots.length} 镜 | 召回源: ${project ?? "全库（跨书）"}（topk=${topk}）`);
+console.log(`[recall] 会话 ${sessionId} | 分镜需求 ${shots.length} 镜 | 召回源: ${projects.length ? projects.join(" + ") : "全库（跨书）"}（topk=${topk}）`);
 
 /* ---------- 检索器（retriever 三通道） ---------- */
 const { pathToFileURL } = await import("node:url");
@@ -68,14 +91,14 @@ function resolveText(shot) {
   } catch { return null; }
 }
 
-/* ---------- 逐镜召回（跨书：不限定 project，三通道全库召回） ---------- */
+/* ---------- 逐镜召回（参考源选择：限书 projects 或全库） ---------- */
 const recalls = [];
 for (const shot of shots) {
   const query = { text: shot.content ?? "", type: shot.type, funcs: shot.funcs ?? [], label: shot.label ?? "" };
   let hits = [];
   try {
-    // 跨书召回：retrieve 不传 projects（全库）——label 跨书噪声 + token/vec 全库
-    const r = await retrieve(query, { topk });
+    // 限书召回：只传 projects（所选书内三通道召回）；不传 = 全库跨书
+    const r = await retrieve(query, { topk, projects: projects.length ? projects : undefined });
     hits = (r.hits ?? []).map((h) => {
       const sh = h.shot ?? {};
       const text = resolveText(sh);
@@ -100,7 +123,7 @@ for (const shot of shots) {
 /* ---------- 落盘 recalls.json（完整装配） ---------- */
 const recallsJson = {
   sessionId,
-  project: project ?? null,   // 传了 = 单书限定；null = 跨书全库
+  projects: projects.length ? projects : null, // 选了书 = [书A,书B]；null = 全库跨书
   topk,
   generatedAt: new Date().toISOString(),
   summary,

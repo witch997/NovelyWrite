@@ -59,6 +59,10 @@
         <textarea id="aiPrompt" placeholder="输入剧情/分镜需求，AI 将检索参考并写作…" rows="4"></textarea>
         <button id="btnGenShots" class="btn btn-sm btn-accent">生成分镜序列</button>
       </div>
+      <div class="ref-pool">
+        <div class="ref-pool-title">参考书（勾选 = 只从这些书召回；不选 = 全库跨书）</div>
+        <div id="refPoolList" class="ref-pool-list"><span class="muted">加载中…</span></div>
+      </div>
       <div id="aiResult" class="ai-result">
         <div class="placeholder">AI 生成结果将显示在这里</div>
       </div>
