@@ -40,7 +40,13 @@ const DICT_STOPWORDS = new Set([
   "一下", "一点", "一起", "一边", "一直", "一定", "一样", "一时", "一天", "一次",
   "两人", "三人", "众人", "大家", "他们", "我们", "你们", "她们", "咱们",
   "那些", "这时", "那时", "此时", "此刻", "眼前", "面前", "身边", "身后", "心里",
+  "第一", "一番", "一事", "一物", "一切", "何事", "如何", "何为", "今日", "明日",
+  "当时", "当下", "原来", "本来", "方才", "方才", "此后", "后来", "其中", "其间",
+  "恐怕", "只怕", "想必", "不知", "不曾", "未曾", "只得", "只好", "只是", "但凡",
 ]);
+
+/** 句子文本清洗正则：标点/引号/空白全部剔除（含中文弯引号——漏了会让引号混入 PMI 词） */
+const SENT_CLEAN_RE = /[，。！？…、；：""''“”‘’—–·《》「」『』【】〈〉\s]/g;
 
 /* ========== PMI 统计切词（词典建库的次源：从句子 text 提取真词，替代滑窗） ========== */
 
@@ -73,7 +79,7 @@ export function buildPmiTable(projects) {
       try {
         const data = JSON.parse(fs.readFileSync(path.join(sentDir, file), "utf-8"));
         for (const s of data.sentences ?? []) {
-          const t = (s.text ?? "").replace(/[，。！？…、；：""''（）《》\s]/g, "");
+          const t = (s.text ?? "").replace(SENT_CLEAN_RE, "");
           for (let i = 0; i < t.length; i++) {
             unigram.set(t[i], (unigram.get(t[i]) ?? 0) + 1);
             total++;
@@ -174,7 +180,7 @@ function buildDictFor(project, opts = {}) {
         try {
           const data = JSON.parse(fs.readFileSync(path.join(sentDir, file), "utf-8"));
           for (const s of data.sentences ?? []) {
-            const clean = (s.text ?? "").replace(/[，。！？…、；：""''（）《》\s]/g, "");
+            const clean = (s.text ?? "").replace(SENT_CLEAN_RE, "");
             for (const w of pmiCut(clean, pmiTable, opts)) {
               if (w.length >= 2 && w.length <= 4 && !DICT_STOPWORDS.has(w)) {
                 freq.set(w, (freq.get(w) ?? 0) + 1);
