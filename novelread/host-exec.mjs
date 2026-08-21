@@ -517,7 +517,7 @@ export async function main(argv = cliArgs()) {
 
   /* ===== 主循环：失败自动重跑 1 次 → 仍失败自动 fix + pending 记录；失败率 >30% 熔断 ===== */
   const totalChapters = todo.length;
-  let processedCh = 0, failedCh = 0;
+  let processedCh = 0, failedCh = 0, okCount = 0; // okCount: 本批成功章数（批末自动聚合依据）
   for (const ch of todo) {
     processedCh++;
     const fuse = failedCh / processedCh > 0.3; // 熔断：已处理章失败率 >30% → 停止自动重跑/fix
@@ -545,6 +545,7 @@ export async function main(argv = cliArgs()) {
       recordPending(ch, result.issue);
       chapterIssues.push(`第${ch.number}章 ${result.issue}（${fuse ? "熔断,未重试" : "已重试1次" + (hasShots && hasChap ? "+fix" : "")}）`);
     } else {
+      okCount++; // 成功章计数（批末自动聚合：至少 1 章成功才跑）
       clearPending(ch); // 成功 → 从 pending 移除
     }
   }
@@ -591,6 +592,24 @@ export async function main(argv = cliArgs()) {
     console.log(`[host] 向量构建完成：${vresult.stats?.totalShots ?? 0} 分镜 / ${vresult.stats?.totalChapters ?? 0} 章`);
   } else {
     console.log(`[host] 向量构建跳过：${vresult?.reason ?? "未知原因"}（${vresult?.guidance ?? ""}）`);
+  }
+
+  /* ===== 批末自动补跑增量聚合（大事件/卷纲/章节表/头文档/词典） =====
+   * 语义：成功章 > 0 才跑（全失败 → aggregates 无输入会 exit(1)，需跳过）；
+   * 聚合增量模式：无新增章时零 LLM 开销；失败章不占 aggregatedChapters 名额，补跑成功后下次自然聚合；
+   * 聚合失败仅 warning（不拖垮 annotate）——聚合有 incremental-state.json 幂等重入，下次自动/手动聚合可续跑。 */
+  if (okCount > 0) {
+    console.log(`\n[host] 批末自动补跑增量聚合（本批成功 ${okCount} 章）...`);
+    try {
+      const [aggCmd, aggArgs, aggEnv] = runScriptArgs("novelread/aggregates.mjs", [corpusName]);
+      const aggOut = execFileSync(aggCmd, aggArgs, { encoding: "utf-8", env: aggEnv, timeout: 600000, maxBuffer: 32 * 1024 * 1024 }); // 10 分钟（聚合 3 次 LLM 调用）
+      console.log(aggOut.trim().slice(-1500)); // 只回显尾部关键信息（新增章/完成/索引），全文进任务日志
+    } catch (e) {
+      console.log((e.stdout ?? "").toString().slice(-600) || `[聚合✗] ${e.message}`);
+      console.log("  [聚合] 本次聚合未完成（不阻塞）。可用补建指令后的下次任务自动续跑，或手动: node cli.mjs aggregate <书>");
+    }
+  } else {
+    console.log("\n[host] 本批无成功章，跳过自动聚合（失败章补跑成功后批末会自动聚合）");
   }
 }
 
