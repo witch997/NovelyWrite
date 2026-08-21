@@ -431,26 +431,37 @@
     const inputSec = $("aiInputSec"), refSec = $("aiRefSec"), resultSec = $("aiResultSec");
     const spH1 = document.querySelector('.splitter-h[data-split="aiInput"]');
     const spH2 = document.querySelector('.splitter-h[data-split="aiRef"]');
-    const SPLIT_H = 10; // 两条行高拖拽条总高
 
     // 恢复记忆尺寸（列宽）
     const savedL = Number(localStorage.getItem("nw-left-w"));
     const savedR = Number(localStorage.getItem("nw-right-w"));
     if (savedL > 0) left.style.width = Math.min(savedL, layoutW() * 0.6) + "px";
     if (savedR > 0) right.style.width = Math.min(savedR, layoutW() * 0.6) + "px";
-    // 恢复记忆尺寸（输入/参考书区行高）
-    const savedH1 = Number(localStorage.getItem("nw-ai-input-h"));
-    const savedH2 = Number(localStorage.getItem("nw-ai-ref-h"));
-    if (savedH1 >= 110) inputSec.style.height = savedH1 + "px";
-    if (savedH2 >= 60) refSec.style.height = savedH2 + "px";
 
-    /** 重算成稿区高度 = 面板高 − 输入区 − 参考书区 − 分隔条（三块严格互补，成稿区永不覆盖上方） */
+    /* ---------- AI 栏：三块 + 两条拖拽条 绝对定位统一排布 ----------
+     * 输入区/参考书区高度用 JS 变量（记忆/默认），成稿区贴底占剩余。
+     * 所有 top/height 由 layoutAiPanel 一次性计算 → 区块物理上不可能跨栏/互相覆盖。 */
+    let inputH = Math.max(110, Number(localStorage.getItem("nw-ai-input-h")) || 160);
+    let refH = Math.max(60, Number(localStorage.getItem("nw-ai-ref-h")) || 130);
+    const SPLIT = 5; // 单条拖拽条高
+
     function layoutAiPanel() {
       const panelH = panel.getBoundingClientRect().height;
       if (!panelH) return;
-      const inputH = inputSec.getBoundingClientRect().height;
-      const refH = refSec.getBoundingClientRect().height;
-      resultSec.style.height = Math.max(80, panelH - inputH - refH - SPLIT_H) + "px";
+      const resultH = Math.max(80, panelH - inputH - refH - SPLIT * 2);
+      // 输入区
+      inputSec.style.top = "0px";
+      inputSec.style.height = inputH + "px";
+      // 拖拽条1
+      spH1.style.top = inputH + "px";
+      // 参考书区
+      refSec.style.top = inputH + SPLIT + "px";
+      refSec.style.height = refH + "px";
+      // 拖拽条2
+      spH2.style.top = inputH + SPLIT + refH + "px";
+      // 成稿区（贴底）
+      resultSec.style.top = inputH + SPLIT * 2 + refH + "px";
+      resultSec.style.height = resultH + "px";
     }
     layoutAiPanel();
 
@@ -481,23 +492,23 @@
       });
     }
 
-    /** 行高拖拽：只调目标块高度（带 clamp），成稿区高度由 layoutAiPanel 重算。
-     *  pointer events + setPointerCapture：鼠标移出窗口也不丢事件，杜绝卡死。 */
-    function dragRow(spEl, target, saveKey, minH) {
+    /** 行高拖拽：改 JS 变量 inputH/refH（带 clamp），layoutAiPanel 重排全部区块。
+     *  pointer events + setPointerCapture：鼠标移出窗口不丢事件，杜绝卡死。 */
+    function dragRow(spEl, kind, saveKey, minH) {
       spEl.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         spEl.setPointerCapture?.(e.pointerId);
         spEl.classList.add("dragging");
         const startY = e.clientY;
-        const startH = target.getBoundingClientRect().height;
-        const other = target === inputSec ? refSec : inputSec; // 另一块固定高度
+        const startH = kind === "input" ? inputH : refH;
         const move = (ev) => {
           const panelH = panel.getBoundingClientRect().height;
-          const otherH = other.getBoundingClientRect().height;
-          const maxH = panelH - otherH - 80 - SPLIT_H; // 给成稿区至少留 80px
+          const otherH = kind === "input" ? refH : inputH;
+          // 目标块上限 = 面板 − 另一块 − 成稿区最小(80) − 两条拖拽条
+          const maxH = panelH - otherH - 80 - SPLIT * 2;
           const h = Math.max(minH, Math.min(startH + (ev.clientY - startY), maxH));
-          target.style.height = h + "px";
-          layoutAiPanel(); // 成稿区跟随重算
+          if (kind === "input") inputH = h; else refH = h;
+          layoutAiPanel();
         };
         const up = (ev) => {
           spEl.classList.remove("dragging");
@@ -505,7 +516,7 @@
           document.removeEventListener("pointermove", move);
           document.removeEventListener("pointerup", up);
           document.removeEventListener("pointercancel", up);
-          localStorage.setItem(saveKey, String(Math.round(target.getBoundingClientRect().height)));
+          localStorage.setItem(saveKey, String(Math.round(kind === "input" ? inputH : refH)));
         };
         document.addEventListener("pointermove", move);
         document.addEventListener("pointerup", up);
@@ -515,8 +526,8 @@
 
     dragCol(spLeft, left, "nw-left-w", true);
     dragCol(spRight, right, "nw-right-w", false);
-    dragRow(spH1, inputSec, "nw-ai-input-h", 110); // 输入区：需容纳按钮+输入框
-    dragRow(spH2, refSec, "nw-ai-ref-h", 60);       // 参考书区：标题+可滚动列表
+    dragRow(spH1, "input", "nw-ai-input-h", 110); // 输入区：需容纳按钮+输入框
+    dragRow(spH2, "ref", "nw-ai-ref-h", 60);       // 参考书区：标题+可滚动列表
     window.addEventListener("resize", () => layoutAiPanel());
   }
 

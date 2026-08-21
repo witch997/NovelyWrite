@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -36,7 +36,7 @@
       <div class="placeholder">先选择或新建一本书<br>再「+ 章」开始写作</div>
     </div>
   </aside>
-  <div class="splitter-v" data-split="left"><span class="splitter-label">按住可拖拽</span></div>
+  <div class="splitter-v" data-split="left"></div>
 
   <!-- 中栏：写作编辑器（保存/清空在此） -->
   <section class="pane pane-center">
@@ -52,7 +52,7 @@
       <div id="vditor"></div>
     </div>
   </section>
-  <div class="splitter-v" data-split="right"><span class="splitter-label">按住可拖拽</span></div>
+  <div class="splitter-v" data-split="right"></div>
 
   <!-- 右栏：AI 参考（写作按钮 + 输入需求 + 参考书 + AI 成稿，内部可调高） -->
   <aside class="pane pane-right" id="paneRight">
@@ -64,12 +64,12 @@
         <textarea id="aiPrompt" placeholder="输入剧情需求，AI 将自动生成分镜并写作成稿…"></textarea>
         <button id="btnGenerate" class="btn btn-accent">✨ AI 写作</button>
       </div>
-      <div class="splitter-h" data-split="aiInput"><span class="splitter-label">按住可拖拽</span></div>
+      <div class="splitter-h" data-split="aiInput"></div>
       <div class="ai-sec" id="aiRefSec">
         <div class="ref-pool-title">参考书（勾选 = 只从这些书召回；不选 = 全库跨书）</div>
         <div id="refPoolList" class="ref-pool-list"><span class="muted">加载中…</span></div>
       </div>
-      <div class="splitter-h" data-split="aiRef"><span class="splitter-label">按住可拖拽</span></div>
+      <div class="splitter-h" data-split="aiRef"></div>
       <div class="ai-sec ai-result-sec" id="aiResultSec">
         <div id="aiResult" class="ai-result">
           <div class="placeholder">AI 成稿将显示在这里</div>
