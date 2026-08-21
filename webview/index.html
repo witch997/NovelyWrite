@@ -94,8 +94,12 @@
       <div class="setting-group-title">LLM · 对话（建库 annotate 用）</div>
       <div class="setting-group">
         <label class="setting-row">
-          <span>对话 API Key</span>
+          <span>对话 API Key（建库）</span>
           <input id="setChatApiKey" type="password" class="input" placeholder="sk-…（留空=不修改）" autocomplete="off">
+        </label>
+        <label class="setting-row">
+          <span>建库 API 网址</span>
+          <input id="setChatBaseUrl" class="input" placeholder="https://api.deepseek.com/v1（留空=默认）">
         </label>
         <label class="setting-row">
           <span>建库模型（annotate）</span>
@@ -109,12 +113,24 @@
           <input id="setEmbedApiKey" type="password" class="input" placeholder="sk-…（留空=不修改）" autocomplete="off">
         </label>
         <label class="setting-row">
+          <span>向量 API 网址</span>
+          <input id="setEmbedBaseUrl" class="input" placeholder="https://api.siliconflow.cn/v1（留空=默认）">
+        </label>
+        <label class="setting-row">
           <span>向量模型（embed）</span>
           <select id="setEmbedModel" class="input"><option value="">(加载中…)</option></select>
         </label>
       </div>
-      <div class="setting-group-title">LLM · 写作（shot-writing 工作台）</div>
+      <div class="setting-group-title">LLM · 写作（shot-writing 工作台，可独立于建库）</div>
       <div class="setting-group">
+        <label class="setting-row">
+          <span>写作 API Key</span>
+          <input id="setShotApiKey" type="password" class="input" placeholder="留空 = 用建库的 Key" autocomplete="off">
+        </label>
+        <label class="setting-row">
+          <span>写作 API 网址</span>
+          <input id="setShotBaseUrl" class="input" placeholder="留空 = 用建库的网址">
+        </label>
         <label class="setting-row">
           <span>写作模型</span>
           <select id="setShotModel" class="input"><option value="">(加载中…)</option></select>

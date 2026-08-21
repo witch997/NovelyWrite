@@ -296,9 +296,9 @@
         statusEl.textContent = "⚠ LLM 未配置(无 apiKey)";
         statusEl.className = "env-status warn";
       }
-      // 顶栏写作模型选择器：选项从 API 读（chat 模型列表）
+      // 顶栏写作模型选择器：选项从写作 API 读（独立 base/key，缺则回退全局 chat）
       const current = cfg?.features?.["shot-writing"]?.chat?.model || "";
-      const data = await fetchModels("chat");
+      const data = await fetchModels("writing");
       fillModelSelect($("modelSelect"), data, current);
     } catch {
       $("envStatus").textContent = "服务未连接";
@@ -636,11 +636,16 @@
       // Key 状态提示（不回显密钥）
       $("setChatApiKey").placeholder = cfg?.chat?.apiKeySet ? "已配置 ✓（留空不修改）" : "未配置，填入 sk-…";
       $("setEmbedApiKey").placeholder = cfg?.embed?.apiKeySet ? "已配置 ✓（留空不修改）" : "未配置，填入 sk-…";
-      // 模型选择器（从 API 读）
-      const [chatData, embedData] = await Promise.all([fetchModels("chat"), fetchModels("embed")]);
+      $("setShotApiKey").placeholder = cfg?.features?.["shot-writing"]?.chat?.apiKey ? "已配置 ✓（留空不修改）" : "留空 = 用建库的 Key";
+      // 网址（回显；为空则占位默认）
+      $("setChatBaseUrl").value = cfg?.chat?.baseUrl || "";
+      $("setEmbedBaseUrl").value = cfg?.embed?.baseUrl || "";
+      $("setShotBaseUrl").value = cfg?.features?.["shot-writing"]?.chat?.baseUrl || "";
+      // 模型选择器（从各自 API 读：建库=chat / 写作=writing(独立API) / 向量=embed）
+      const [chatData, writingData, embedData] = await Promise.all([fetchModels("chat"), fetchModels("writing"), fetchModels("embed")]);
       fillModelSelect($("setAnnotateModel"), chatData, cfg?.chat?.model || "");
       fillModelSelect($("setEmbedModel"), embedData, cfg?.embed?.model || "");
-      fillModelSelect($("setShotModel"), chatData, cfg?.features?.["shot-writing"]?.chat?.model || "");
+      fillModelSelect($("setShotModel"), writingData, cfg?.features?.["shot-writing"]?.chat?.model || "");
       $("setShotTemp").value = cfg?.features?.["shot-writing"]?.chat?.temperature ?? cfg?.chat?.temperature ?? "";
     } catch (e) {
       toast(`读取配置失败: ${e.message}`);
@@ -659,34 +664,37 @@
     }
   }
 
-  /** 保存设置：填 Key(POST /api/config/keys) + 模型/温度(PUT /api/config) + 自动保存间隔 */
+  /** 保存设置：Key/网址/模型/温度（PUT /api/config，支持各模块独立 API）+ 自动保存间隔 */
   async function saveSettings() {
-    // 1. API Key（填了才写；写后重新加载模型列表）
-    const chatKey = $("setChatApiKey").value.trim();
-    const embedKey = $("setEmbedApiKey").value.trim();
-    let wroteKey = false;
-    if (chatKey || embedKey) {
-      await api("/api/config/keys", {
-        method: "POST",
-        body: JSON.stringify({ chatApiKey: chatKey || undefined, embedApiKey: embedKey || undefined }),
-      });
-      wroteKey = true;
-    }
-    // 2. 模型与温度
+    const val = (id) => $(id).value.trim();
     const body = { chat: {}, embed: {}, features: {} };
+    // 建库(全局 chat)：Key / 网址 / 模型
+    const chatKey = val("setChatApiKey");
+    const chatBaseUrl = val("setChatBaseUrl");
     const annotateModel = $("setAnnotateModel").value;
+    if (chatKey) body.chat.apiKey = chatKey;
+    if (chatBaseUrl) body.chat.baseUrl = chatBaseUrl;
+    if (annotateModel) body.chat.model = annotateModel;
+    // 向量：Key / 网址 / 模型
+    const embedKey = val("setEmbedApiKey");
+    const embedBaseUrl = val("setEmbedBaseUrl");
     const embedModel = $("setEmbedModel").value;
+    if (embedKey) body.embed.apiKey = embedKey;
+    if (embedBaseUrl) body.embed.baseUrl = embedBaseUrl;
+    if (embedModel) body.embed.model = embedModel;
+    // 写作(features.shot-writing.chat)：Key / 网址 / 模型 / 温度（独立 API）
+    const shotApiKey = val("setShotApiKey");
+    const shotBaseUrl = val("setShotBaseUrl");
     const shotModel = $("setShotModel").value;
     const temp = parseFloat($("setShotTemp").value);
-    if (annotateModel) body.chat.model = annotateModel;
-    if (embedModel) body.embed.model = embedModel;
-    if (shotModel) body.features["shot-writing"] = { chat: { model: shotModel } };
-    if (!Number.isNaN(temp)) {
-      body.features["shot-writing"] = body.features["shot-writing"] ?? {};
-      body.features["shot-writing"].chat = { ...(body.features["shot-writing"].chat ?? {}), temperature: temp };
-    }
+    const shotChat = {};
+    if (shotApiKey) shotChat.apiKey = shotApiKey;
+    if (shotBaseUrl) shotChat.baseUrl = shotBaseUrl;
+    if (shotModel) shotChat.model = shotModel;
+    if (!Number.isNaN(temp)) shotChat.temperature = temp;
+    if (Object.keys(shotChat).length) body.features["shot-writing"] = { chat: shotChat };
     await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
-    // 3. 自动保存间隔
+    // 自动保存间隔
     const sel = $("setAutoSave");
     let min = sel.value === "custom" ? parseInt($("setAutoSaveCustom").value, 10) : Number(sel.value);
     if (!Number.isFinite(min) || min < 0) min = 5;
@@ -695,7 +703,6 @@
     toast(`✅ 设置已保存（自动保存 ${min > 0 ? min + " 分钟" : "关闭"}）`);
     loadConfig(); // 刷新顶栏模型选择器
     closeSettings();
-    if (wroteKey) toast("✅ API Key 已保存（模型列表已刷新）");
   }
 
   /* ================= 打开文件夹 ================= */

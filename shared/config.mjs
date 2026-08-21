@@ -66,8 +66,8 @@ function applyEnvOverrides(cfg) {
  *   4. 根 config.json 的 chat（全局默认）
  *   5. 代码默认值
  *
- * 安全边界：features.* 只允许非敏感字段（model/temperature/maxTokens/timeoutMs/maxRetries）；
- *   apiKey/baseUrl 只走全局 chat 段或环境变量，不进模块作用域。
+ * 模块作用域允许全字段（含 apiKey/baseUrl）——「建库与写作使用不同 API」：
+ *   写作模块可配 features.shot-writing.chat.{apiKey,baseUrl,model,...} 完全独立于全局 chat。
  *
  * @param {string} [moduleName] 模块名（如 "shot-writing"）——读根 config 的 features.<module>
  * @param {string} [featureDir] 兼容：功能目录路径（如 features/shot-writing/），
@@ -75,26 +75,26 @@ function applyEnvOverrides(cfg) {
  * @returns {{baseUrl, apiKey, model, temperature, maxTokens, timeoutMs, maxRetries, moduleName}}
  */
 export function loadChatConfig(moduleName, featureDir) {
-  // 敏感字段白名单：features.* 与功能目录 config 只允许这些（apiKey/baseUrl 禁止）
-  const NON_SENSITIVE = ["model", "temperature", "maxTokens", "timeoutMs", "maxRetries", "shotLen"];
-  const pickNonSensitive = (o) => Object.fromEntries(NON_SENSITIVE.filter((k) => o?.[k] !== undefined).map((k) => [k, o[k]]));
+  // 模块作用域允许字段（apiKey/baseUrl 也允许——写作/建库独立 API）
+  const MODULE_FIELDS = ["apiKey", "baseUrl", "model", "temperature", "maxTokens", "timeoutMs", "maxRetries", "shotLen"];
+  const pickModuleFields = (o) => Object.fromEntries(MODULE_FIELDS.filter((k) => o?.[k] !== undefined).map((k) => [k, o[k]]));
 
   // ① 全局 config.json + 环境变量覆盖
   let cfg = applyEnvOverrides(loadRawConfig());
 
-  // ② 功能目录 config.json（兼容覆盖层，非敏感字段）
+  // ② 功能目录 config.json（兼容覆盖层，模块字段）
   if (featureDir) {
     const local = loadFeatureConfig(featureDir);
     if (local?.chat && typeof local.chat === "object") {
-      cfg = { ...(cfg ?? {}), chat: { ...(cfg?.chat ?? {}), ...pickNonSensitive(local.chat) } };
+      cfg = { ...(cfg ?? {}), chat: { ...(cfg?.chat ?? {}), ...pickModuleFields(local.chat) } };
     }
   }
 
-  // ③ 根 config.json 的 features.<module>.chat（模块作用域，非敏感字段）
+  // ③ 根 config.json 的 features.<module>.chat（模块作用域）
   if (moduleName) {
     const featChat = cfg?.features?.[moduleName]?.chat;
     if (featChat && typeof featChat === "object") {
-      cfg = { ...(cfg ?? {}), chat: { ...(cfg?.chat ?? {}), ...pickNonSensitive(featChat) } };
+      cfg = { ...(cfg ?? {}), chat: { ...(cfg?.chat ?? {}), ...pickModuleFields(featChat) } };
     }
   }
 

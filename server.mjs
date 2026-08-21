@@ -195,23 +195,22 @@ function apiConfigGet() {
   return loadConfigSummary();
 }
 
-/** 配置：写 features 段 / 全局非敏感字段（模块作用域；apiKey 禁止写入） */
+/** 配置：写 features 段 / 全局字段（apiKey/baseUrl 允许——建库/写作可独立 API） */
 function apiConfigPut(body) {
   const raw = loadRawConfig() ?? {};
-  const NON_SENSITIVE = ["model", "temperature", "maxTokens", "timeoutMs", "maxRetries"];
-  const pick = (o) => Object.fromEntries(NON_SENSITIVE.filter((k) => o?.[k] !== undefined && o[k] !== null && o[k] !== "").map((k) => [k, o[k]]));
+  const FIELDS = ["apiKey", "baseUrl", "model", "temperature", "maxTokens", "timeoutMs", "maxRetries"];
+  const pick = (o) => Object.fromEntries(FIELDS.filter((k) => o?.[k] !== undefined && o[k] !== null && o[k] !== "").map((k) => [k, o[k]]));
 
-  // 全局 chat 非敏感字段
+  // 全局 chat / embed 字段
   if (body?.chat) {
     const picked = pick(body.chat);
     raw.chat = { ...(raw.chat ?? {}), ...picked };
   }
-  // embed 非敏感字段
   if (body?.embed) {
     const picked = pick(body.embed);
     raw.embed = { ...(raw.embed ?? {}), ...picked };
   }
-  // features.<module>.chat（模块作用域，非敏感）
+  // features.<module>.chat（模块作用域，含 apiKey/baseUrl——写作独立 API）
   if (body?.features && typeof body.features === "object") {
     raw.features = raw.features ?? {};
     for (const [mod, v] of Object.entries(body.features)) {
@@ -250,7 +249,8 @@ async function fetchModels(baseUrl, apiKey, kind) {
 }
 
 /**
- * GET /api/models/(chat|embed) — 从 API 读可用模型（供前端选择器）
+ * GET /api/models/(chat|writing|embed) — 从 API 读可用模型（供前端选择器）
+ *   chat=建库(全局) writing=写作(独立 API,若无则回退全局) embed=向量
  * 无 apiKey → {ok:false, reason:"缺少…API Key"}
  */
 async function apiModels(kind) {
@@ -261,6 +261,15 @@ async function apiModels(kind) {
     if (!key) return { ok: false, kind, reason: "缺少向量 API Key（config.json embed.apiKey 或 NOVELYWRITE_EMBED_API_KEY）" };
     const base = (e.baseUrl ?? "https://api.siliconflow.cn/v1").replace(/\/+$/, "");
     return await fetchModels(base, key, "embed");
+  }
+  if (kind === "writing") {
+    // 写作独立 API：features.shot-writing.chat 优先，缺则回退全局 chat
+    const w = raw.features?.["shot-writing"]?.chat ?? {};
+    const c = raw.chat ?? {};
+    const key = w.apiKey || c.apiKey || process.env.NOVELYWRITE_CHAT_API_KEY;
+    if (!key) return { ok: false, kind, reason: "缺少写作 API Key（features.shot-writing.chat.apiKey 或全局 chat.apiKey）" };
+    const base = (w.baseUrl || c.baseUrl || "https://api.deepseek.com/v1").replace(/\/+$/, "");
+    return await fetchModels(base, key, "writing");
   }
   const c = raw.chat ?? {};
   const key = c.apiKey || process.env.NOVELYWRITE_CHAT_API_KEY;
@@ -538,7 +547,7 @@ const ROUTES = [
   { m: "POST", p: /^\/api\/search$/, h: async (_m, body) => apiSearch(body) },
   { m: "GET", p: /^\/api\/config$/, h: () => apiConfigGet() },
   { m: "PUT", p: /^\/api\/config$/, h: (_m, body) => apiConfigPut(body) },
-  { m: "GET", p: /^\/api\/models\/(chat|embed)$/, h: async (m) => apiModels(m[1]) },
+  { m: "GET", p: /^\/api\/models\/(chat|writing|embed)$/, h: async (m) => apiModels(m[1]) },
   { m: "POST", p: /^\/api\/config\/keys$/, h: (_m, b) => apiSaveKeys(b) },
   { m: "POST", p: /^\/api\/system\/open-folder$/, h: (_m, body) => apiOpenFolder(body) },
   { m: "GET", p: /^\/api\/sessions$/, h: () => apiSessions() },
