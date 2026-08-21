@@ -233,28 +233,32 @@ body {
 /* 占位符 */
 .placeholder { color: var(--label-tertiary); font-size: 13px; padding: 18px; text-align: center; line-height: 1.8; }
 
-/* ===== 底部任务条 ===== */
-.taskbar {
-  flex-shrink: 0; border-top: 1px solid var(--border);
-  background: var(--bg-module);
+/* ===== AI 成稿区（成稿直显） ===== */
+.ai-status { color: var(--label-secondary); font-size: 13px; padding: 14px; line-height: 1.8; }
+.draft-title {
+  position: sticky; top: 0; z-index: 2;
+  background: var(--bg-module); padding: 10px 12px;
+  font-size: 12px; font-weight: 600; color: var(--label-secondary);
+  border-bottom: 1px solid var(--border);
 }
-.taskbar-header {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 7px 18px; cursor: pointer; font-size: 12px; color: var(--label-tertiary);
-  user-select: none;
+.draft-text {
+  padding: 14px 16px;
+  font-size: 14px; line-height: 1.9; color: var(--label-primary);
+  white-space: pre-wrap; word-break: break-word;
 }
-.taskbar-header:hover { color: var(--label-primary); }
-.taskbar-body {
-  display: none; max-height: 150px; overflow-y: auto;
-  font-family: "SF Mono", "JetBrains Mono", Consolas, monospace; font-size: 11px;
-  padding: 6px 18px 12px; color: var(--label-secondary);
-  white-space: pre-wrap; line-height: 1.7;
-  background: var(--code-bg);
+
+/* ===== 轻量 toast（右下角浮动提示） ===== */
+#toast {
+  position: fixed; right: 18px; bottom: 18px; z-index: 200;
+  max-width: 420px; padding: 10px 16px;
+  background: var(--bg-module); color: var(--label-primary);
+  border: 1px solid var(--border-strong); border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  font-size: 13px;
+  opacity: 0; transform: translateY(8px); pointer-events: none;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
 }
-.taskbar.open .taskbar-body { display: block; }
-.taskbar-status.running { color: var(--amber-500); }
-.taskbar-status.success { color: var(--green-500); }
-.taskbar-status.failed { color: var(--red-500); }
+#toast.show { opacity: 1; transform: translateY(0); }
 
 /* 滚动条 */
 ::-webkit-scrollbar { width: 9px; height: 9px; }

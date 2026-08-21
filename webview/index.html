@@ -54,7 +54,7 @@
   </section>
   <div class="splitter-v" data-split="right"></div>
 
-  <!-- 右栏：AI 参考（写作按钮 + 输入需求 + 参考书 + 结果，内部可调高） -->
+  <!-- 右栏：AI 参考（写作按钮 + 输入需求 + 参考书 + AI 成稿，内部可调高） -->
   <aside class="pane pane-right" id="paneRight">
     <div class="pane-header">
       <span>AI 参考</span>
@@ -72,21 +72,12 @@
       <div class="splitter-h" data-split="aiRef"></div>
       <div class="ai-sec ai-result-sec" id="aiResultSec">
         <div id="aiResult" class="ai-result">
-          <div class="placeholder">AI 生成结果将显示在这里</div>
+          <div class="placeholder">AI 成稿将显示在这里</div>
         </div>
       </div>
     </div>
   </aside>
 </main>
-
-<!-- 底部任务日志条(可折叠) -->
-<footer class="taskbar" id="taskbar">
-  <div class="taskbar-header" id="taskbarToggle">
-    <span>任务日志</span>
-    <span class="taskbar-status" id="taskStatus">空闲</span>
-  </div>
-  <div class="taskbar-body" id="taskLog"></div>
-</footer>
 
 <!-- ===== 设置面板(模态) ===== -->
 <div class="modal-mask" id="settingsMask">

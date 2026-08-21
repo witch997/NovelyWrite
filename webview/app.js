@@ -33,8 +33,6 @@
   const $ = (id) => document.getElementById(id);
   const outlineList = $("outlineList");
   const aiResult = $("aiResult");
-  const taskLog = $("taskLog");
-  const taskStatus = $("taskStatus");
 
   /* ================= 通用工具 ================= */
   async function api(url, opt = {}) {
@@ -47,6 +45,21 @@
     return data;
   }
   const pad4 = (n) => String(n).padStart(4, "0");
+
+  /* ================= 轻量提示(toast,右下角浮动) ================= */
+  let toastTimer = null;
+  function toast(msg) {
+    let el = document.getElementById("toast");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "toast";
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove("show"), 2500);
+  }
 
   /* ================= Vditor 编辑器 ================= */
   let vditor = null;
@@ -91,9 +104,9 @@
         method: "PUT",
         body: JSON.stringify({ content }),
       });
-      if (!silent) taskStatus.textContent = "✅ 已保存到 mybook";
+      if (!silent) toast("✅ 已保存到 mybook");
     } catch (e) {
-      if (!silent) taskStatus.textContent = `保存失败: ${e.message}`;
+      if (!silent) toast(`保存失败: ${e.message}`);
     }
   }
 
@@ -172,9 +185,9 @@
       $("bookSelect").value = name.trim();
       state.currentBook = name.trim();
       await loadBookDetail(name.trim());
-      taskStatus.textContent = `✅ 已建书: ${name.trim()}`;
+      toast(`✅ 已建书: ${name.trim()}`);
     } catch (e) {
-      taskStatus.textContent = `建书失败: ${e.message}`;
+      toast(`建书失败: ${e.message}`);
     }
   }
 
@@ -210,15 +223,15 @@
 
   /** 新建章节（当前书） */
   async function addChapter() {
-    if (!state.currentBook) { taskStatus.textContent = "请先选择或新建一本书"; return; }
+    if (!state.currentBook) { toast("请先选择或新建一本书"); return; }
     try {
       const r = await api(`/api/books/${encodeURIComponent(state.currentBook)}/chapters`, { method: "POST", body: JSON.stringify({}) });
-      taskStatus.textContent = `✅ 已新建第${r.num}章`;
+      toast(`✅ 已新建第${r.num}章`);
       await loadBookDetail(state.currentBook); // 刷新列表（自动打开第一章；若已打开则保持）
       // 保持当前打开的章不变；新章通常是最新一章
       if (!state.currentChapter) openChapter(r.num);
     } catch (e) {
-      taskStatus.textContent = `新建章节失败: ${e.message}`;
+      toast(`新建章节失败: ${e.message}`);
     }
   }
 
@@ -233,7 +246,7 @@
       $("currentChapterTitle").textContent = `${state.currentBook} · ${d.title || `第${pad4(num)}章`}`;
     } catch (e) {
       $("currentChapterTitle").textContent = `第${pad4(num)}章`;
-      taskStatus.textContent = `读取章节失败: ${e.message}`;
+      toast(`读取章节失败: ${e.message}`);
     }
   }
 
@@ -280,9 +293,9 @@
         method: "PUT",
         body: JSON.stringify({ features: { "shot-writing": { chat: { model } } } }),
       });
-      taskStatus.textContent = `✅ 写作模型: ${model}`;
+      toast(`✅ 写作模型: ${model}`);
     } catch (e) {
-      taskStatus.textContent = `模型切换失败: ${e.message}`;
+      toast(`模型切换失败: ${e.message}`);
     }
   }
 
@@ -324,115 +337,79 @@
 
   function pollTask(taskId, onDone) {
     clearInterval(state.taskPolling);
-    taskStatus.textContent = "任务运行中…";
-    taskStatus.className = "taskbar-status running";
     state.taskPolling = setInterval(async () => {
       try {
         const t = await api(`/api/tasks/${taskId}`);
-        const log = await api(`/api/tasks/${taskId}/log`);
-        taskLog.textContent = (log.log || []).join("\n");
         if (t.status !== "running") {
           clearInterval(state.taskPolling);
           state.taskPolling = null;
-          taskStatus.textContent = t.status === "success" ? "✅ 完成" : `❌ ${t.status}`;
-          taskStatus.className = "taskbar-status " + (t.status === "success" ? "success" : "failed");
           onDone?.(t);
         }
       } catch { /* 轮询失败忽略,下轮重试 */ }
     }, 1500);
   }
 
-  /** AI 写作全流程：输入剧情需求 → preprocess(分镜) → recall(召回) → writedraft(成稿) */
+  /** AI 成稿区状态提示（替代原底部任务日志） */
+  function setAiStatus(msg) {
+    aiResult.innerHTML = `<div class="ai-status">${escapeHtml(msg)}</div>`;
+  }
+
+  /** 从任务日志提取 sessionId（不渲染分镜，AI 写作全流程自动衔接） */
+  async function resolveSessionId(taskId) {
+    try {
+      const log = await api(`/api/tasks/${taskId}/log`);
+      const line = (log.log || []).find((l) => l.includes("sessions/"));
+      const m = line?.match(/sessions\/([^/\s]+)/);
+      return m ? m[1] : null;
+    } catch { return null; }
+  }
+
+  /** AI 写作全流程：输入剧情需求 → preprocess(分镜) → recall(召回) → writedraft(成稿) → 成稿直显 */
   async function aiWrite() {
     const prompt = $("aiPrompt").value.trim();
-    if (!prompt) { aiResult.innerHTML = '<div class="placeholder">请先输入剧情需求</div>'; return; }
+    if (!prompt) { setAiStatus("请先输入剧情需求"); return; }
     if (state.busy) return;
     state.busy = true;
-    aiResult.innerHTML = '<div class="placeholder">AI 生成中：正在生成分镜序列…</div>';
+    setAiStatus("AI 生成中：正在生成分镜序列…");
     try {
       const preId = await startTask("preprocess", { input: prompt });
       pollTask(preId, async (t) => {
-        if (t.status !== "success") { aiResult.innerHTML = '<div class="placeholder">❌ 分镜生成失败（见任务日志）</div>'; state.busy = false; return; }
-        await refreshSessionFromTask(preId); // 渲染分镜卡片到 aiResult
-        if (!state.sessionId) { aiResult.innerHTML = '<div class="placeholder">会话 id 未找到（查看任务日志）</div>'; state.busy = false; return; }
+        if (t.status !== "success") { setAiStatus("❌ 分镜生成失败"); state.busy = false; return; }
+        const sid = await resolveSessionId(preId);
+        if (!sid) { setAiStatus("❌ 会话 id 未找到"); state.busy = false; return; }
+        state.sessionId = sid;
         const refBooks = selectedRefBooks();
-        taskStatus.textContent = refBooks.length ? `参考源: ${refBooks.join(" + ")}` : "参考源: 全库跨书";
-        aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">AI 生成中：正在召回参考…</div>');
-        const recallId = await startTask("recall", { session: state.sessionId, topk: 6, projects: refBooks });
+        setAiStatus(refBooks.length ? `AI 生成中：正在从 ${refBooks.join(" + ")} 召回参考…` : "AI 生成中：正在召回参考（全库）…");
+        const recallId = await startTask("recall", { session: sid, topk: 6, projects: refBooks });
         pollTask(recallId, async (t2) => {
-          if (t2.status !== "success") { taskStatus.textContent = "recall 失败"; state.busy = false; return; }
-          aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">AI 生成中：正在写作成稿…</div>');
-          const draftId = await startTask("writedraft", { session: state.sessionId, projects: refBooks });
+          if (t2.status !== "success") { setAiStatus("❌ 参考召回失败"); state.busy = false; return; }
+          setAiStatus("AI 生成中：正在写作成稿…");
+          const draftId = await startTask("writedraft", { session: sid, projects: refBooks });
           pollTask(draftId, async (dt) => {
             state.busy = false;
-            if (dt.status !== "success") { taskStatus.textContent = "写作失败"; aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">❌ 成稿失败（见任务日志）</div>'); return; }
-            taskStatus.textContent = "✅ 成稿完成";
-            await showDraftResult();
+            if (dt.status !== "success") { setAiStatus("❌ 成稿失败"); return; }
+            await showFinalDraft();
           });
         });
       });
     } catch (e) {
       state.busy = false;
-      taskStatus.textContent = `AI 写作失败: ${e.message}`;
+      setAiStatus(`❌ AI 写作失败: ${e.message}`);
     }
   }
 
-  /** 成稿完成后展示：分镜上方已渲染，此处追加成稿预览 */
-  async function showDraftResult() {
+  /** 成稿直显：把最终 final 文本完整传入 AI 成稿窗口 */
+  async function showFinalDraft() {
     try {
       const s = await api(`/api/sessions/${state.sessionId}`);
       const draftEntry = Object.entries(s.drafts ?? {})[0];
-      let html = '<div style="padding:10px 2px 4px;font-weight:600;font-size:13px">✅ 成稿预览</div>';
-      if (draftEntry) {
-        const text = draftEntry[1] || "";
-        html += `<div class="shot-card" style="white-space:pre-wrap;line-height:1.7;font-size:13px">${escapeHtml(text.slice(0, 3000))}${text.length > 3000 ? "…" : ""}</div>`;
-        html += `<div style="font-size:11px;color:var(--label-tertiary)">文件: ${escapeHtml(draftEntry[0])}（完整内容见该文件）</div>`;
-      } else {
-        html += '<div class="placeholder">成稿文件未找到</div>';
-      }
-      aiResult.insertAdjacentHTML("beforeend", html);
-    } catch { /* 展示失败忽略 */ }
-  }
-
-  /** 从任务日志提取 sessionId 并加载分镜 */
-  async function refreshSessionFromTask(taskId) {
-    try {
-      const log = await api(`/api/tasks/${taskId}/log`);
-      const line = (log.log || []).find((l) => l.includes("sessions/"));
-      const m = line?.match(/sessions\/([^/\s]+)/);
-      if (m) {
-        state.sessionId = m[1];
-        await loadSession(state.sessionId);
-      } else {
-        aiResult.innerHTML = '<div class="placeholder">会话 id 未找到(查看任务日志)</div>';
-      }
+      if (!draftEntry) { setAiStatus("成稿文件未找到"); return; }
+      const text = draftEntry[1] || "";
+      aiResult.innerHTML = `
+        <div class="draft-title">📄 AI 成稿 · ${escapeHtml(draftEntry[0])}</div>
+        <div class="draft-text">${escapeHtml(text)}</div>`;
     } catch (e) {
-      aiResult.innerHTML = `<div class="placeholder">加载会话失败: ${e.message}</div>`;
-    }
-  }
-
-  /** 加载会话分镜并展示 */
-  async function loadSession(sessionId) {
-    const s = await api(`/api/sessions/${sessionId}`);
-    state.shots = s.shots?.shots || [];
-    renderShots(state.shots);
-  }
-
-  function renderShots(shots) {
-    if (!shots.length) { aiResult.innerHTML = '<div class="placeholder">分镜序列为空</div>'; return; }
-    aiResult.innerHTML = "";
-    aiResult.insertAdjacentHTML("afterbegin", '<div style="padding:2px 0 8px;font-weight:600;font-size:13px">分镜序列（AI 自动生成）</div>');
-    for (const s of shots) {
-      const card = document.createElement("div");
-      card.className = "shot-card";
-      card.innerHTML = `
-        <div class="shot-head">
-          <span class="shot-tag">${s.type || "?"}</span>
-          ${(s.funcs || []).map((f) => `<span class="shot-func">${f}</span>`).join("")}
-          <span class="shot-label">${s.label || ""}</span>
-        </div>
-        <div class="shot-content">${escapeHtml(s.content || "")}</div>`;
-      aiResult.appendChild(card);
+      setAiStatus(`读取成稿失败: ${e.message}`);
     }
   }
 
@@ -546,7 +523,7 @@
       $("setShotModel").value = cfg?.features?.["shot-writing"]?.chat?.model || cfg?.chat?.model || "";
       $("setShotTemp").value = cfg?.features?.["shot-writing"]?.chat?.temperature ?? cfg?.chat?.temperature ?? "";
     } catch (e) {
-      taskStatus.textContent = `读取配置失败: ${e.message}`;
+      toast(`读取配置失败: ${e.message}`);
     }
     // 自动保存间隔
     const min = getAutoSaveMinutes();
@@ -579,7 +556,7 @@
     if (!Number.isFinite(min) || min < 0) min = 5;
     localStorage.setItem("nw-autosave-min", String(min));
     applyAutoSaveSetting();
-    taskStatus.textContent = `✅ 设置已保存（自动保存 ${min > 0 ? min + " 分钟" : "关闭"}）`;
+    toast(`✅ 设置已保存（自动保存 ${min > 0 ? min + " 分钟" : "关闭"}）`);
     loadConfig(); // 刷新顶栏模型选择器
     closeSettings();
   }
@@ -588,9 +565,9 @@
   async function openFolder(dir) {
     try {
       await api("/api/system/open-folder", { method: "POST", body: JSON.stringify({ dir }) });
-      taskStatus.textContent = `已打开目录: ${dir}`;
+      toast(`已打开目录: ${dir}`);
     } catch (e) {
-      taskStatus.textContent = `打开失败: ${e.message}`;
+      toast(`打开失败: ${e.message}`);
     }
   }
 
@@ -606,7 +583,6 @@
     $("btnGenerate").onclick = aiWrite;
     // 顶栏模型选择器
     $("modelSelect").onchange = onModelChange;
-    $("taskbarToggle").onclick = () => document.getElementById("taskbar").classList.toggle("open");
     // 设置
     $("btnSettings").onclick = openSettings;
     $("btnSettingsClose").onclick = closeSettings;
@@ -638,7 +614,6 @@
     loadRefPool(); // 参考书池(跨书参考源选择)
     loadBooks();   // 我的书(mybook 资产区)
     applyAutoSaveSetting(); // 定时自动保存（设置间隔，默认 5 分钟）
-    taskStatus.textContent = "就绪";
   }
 
   init();
