@@ -42,6 +42,7 @@ const flags = args.filter((a) => a.startsWith("--"));
 const projectDir = projectRoot(project); // 域感知：两域自动探测
 const corpusList = path.join(corpusDir, `${project}-章节清单.csv`);
 const listPath = fs.existsSync(corpusList) ? corpusList : path.join(corpusDir, "章节清单.csv");
+const stateDir = path.join(CODE_ROOT, "novelread", "state"); // LLM 输出留档目录（格式漂移诊断）
 
 /* ================= ① 确定性重算（原 recompute-aggregates） ================= */
 
@@ -257,8 +258,24 @@ async function semanticEvent(summaries, summariesText, opts = {}) {
   console.log(`[聚合] 调用①返回 ${raw.length} 字符`);
   const payload = parsePayload(raw);
   const key = Object.keys(payload).find((k) => k.includes("event.json") && !k.includes("event/"));
-  if (!key) throw new Error("调用①输出缺少 大事件/event.json");
-  const ev = typeof payload[key] === "string" ? JSON.parse(payload[key]) : payload[key];
+  let ev;
+  if (key) {
+    ev = typeof payload[key] === "string" ? JSON.parse(payload[key]) : payload[key];
+  } else if (Array.isArray(payload.lifecycle) && (typeof payload.schema === "string" || payload.lifecycle.length > 0)) {
+    // 兜底：LLM 省略键包装，直接输出 event-card 对象（schema/lifecycle 齐全即采用）
+    console.log("[聚合] 调用①未带键包装，直接采用 event-card 对象（兜底）");
+    ev = payload;
+  } else {
+    // 留档原始输出供诊断（LLM 格式漂移：键不对/输出过短/非 JSON 包装）
+    try {
+      const rawP = path.join(stateDir, `raw-聚合-${project}-event.txt`);
+      fs.mkdirSync(path.dirname(rawP), { recursive: true });
+      fs.writeFileSync(rawP, raw, "utf-8");
+      throw new Error(`调用①输出缺少 大事件/event.json（${raw.length} 字符，原始输出已存 ${rawP}）`);
+    } catch (e) {
+      throw e instanceof Error && e.message.startsWith("调用①") ? e : new Error("调用①输出缺少 大事件/event.json（留档失败）");
+    }
+  }
   // 废弃字段兜底：mainline/chapterIndex 一律不落盘（正交方案下不存在）
   delete ev.mainline;
   delete ev.chapterIndex;
@@ -310,8 +327,23 @@ async function semanticVolume(summaries, summariesText, opts = {}) {
   console.log(`[聚合] 调用②返回 ${raw.length} 字符`);
   const payload = parsePayload(raw);
   const key = Object.keys(payload).find((k) => k.includes("卷纲") && k.endsWith(".json"));
-  if (!key) throw new Error("调用②输出缺少 卷纲/volume.json");
-  const vol = typeof payload[key] === "string" ? JSON.parse(payload[key]) : payload[key];
+  let vol;
+  if (key) {
+    vol = typeof payload[key] === "string" ? JSON.parse(payload[key]) : payload[key];
+  } else if (typeof payload.goal === "string" && Array.isArray(payload.targets)) {
+    // 兜底：LLM 省略键包装，直接输出 volume-card 对象（goal/targets 齐全即采用）
+    console.log("[聚合] 调用②未带键包装，直接采用 volume-card 对象（兜底）");
+    vol = payload;
+  } else {
+    try {
+      const rawP = path.join(stateDir, `raw-聚合-${project}-volume.txt`);
+      fs.mkdirSync(path.dirname(rawP), { recursive: true });
+      fs.writeFileSync(rawP, raw, "utf-8");
+      throw new Error(`调用②输出缺少 卷纲/volume.json（${raw.length} 字符，原始输出已存 ${rawP}）`);
+    } catch (e) {
+      throw e instanceof Error && e.message.startsWith("调用②") ? e : new Error("调用②输出缺少 卷纲/volume.json（留档失败）");
+    }
+  }
   // 废弃字段兜底：eventStructure/mainline 一律不落盘（正交方案下不存在）
   delete vol.eventStructure;
   delete vol.mainline;

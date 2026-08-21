@@ -24,7 +24,7 @@ import { checkJsonText } from "./verify-json.mjs";
 import { execFileSync } from "node:child_process";
 import { deriveChapter } from "./derive-chapter.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject } from "../shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -497,8 +497,8 @@ async function main() {
   };
   console.log(`\n[消耗] LLM ${COST.calls} 次 / 输入 ${COST.promptTokens} / 输出 ${COST.completionTokens} / 合计 ${COST.totalTokens} tokens / 耗时 ${(COST.elapsedMs / 1000).toFixed(1)}s`);
   try {
-    fs.mkdirSync(path.join(CODE_ROOT, "output"), { recursive: true });
-    const costFile = path.join(CODE_ROOT, "output", `标注消耗-${corpusName}.json`);
+    fs.mkdirSync(outputDir, { recursive: true });
+    const costFile = path.join(outputDir, `标注消耗-${corpusName}.json`);
     fs.writeFileSync(costFile, JSON.stringify(costReport, null, 2), "utf-8");
     console.log(`[消耗] 已写入 ${costFile}`);
   } catch (err) {

@@ -49,7 +49,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs, createProject } from "./shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, outputDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs, createProject } from "./shared/paths.mjs";
 import { loadChatConfig, loadConfigSummary, loadRawConfig } from "./shared/config.mjs";
 import { retrieve } from "./retriever/retriever.mjs";
 import { NovelyError, report } from "./shared/errors.mjs";
@@ -396,7 +396,7 @@ const OPENABLE_DIRS = {
   store: storeDir,           // 标注数据/派生
   corpus: corpusDir,         // 语料
   mybook: mybookDir,         // 用户原稿
-  output: path.join(CODE_ROOT, "output"), // 成稿/报告
+  output: outputDir, // 成稿/报告（数据根下）
   webview: path.join(CODE_ROOT, "webview"), // 前端
 };
 
@@ -470,7 +470,7 @@ function apiSessionFinal(id) {
   const draftFile = fs.readdirSync(dir).find((f) => f.endsWith("draft.txt"));
   const project = draftFile ? draftFile.replace(/draft\.txt$/, "") : null;
   if (!project) return { ok: false, reason: "会话无 draft（尚未写作）" };
-  const finalPath = path.join(CODE_ROOT, "output", id, `${project}.final.txt`);
+  const finalPath = path.join(outputDir, id, `${project}.final.txt`);
   if (!fs.existsSync(finalPath)) return { ok: false, reason: `final 不存在: output/${id}/${project}.final.txt` };
   return { ok: true, project, file: `${project}.final.txt`, content: fs.readFileSync(finalPath, "utf-8") };
 }
@@ -498,11 +498,16 @@ async function apiImportBook(body) {
   fs.mkdirSync(corpusDir, { recursive: true });
   const corpusPath = path.join(corpusDir, `${base}-语料.txt`);
   fs.writeFileSync(corpusPath, content, "utf-8");
-  // 2. 自动生成章节清单（spawn，等待完成）
+  // 2. 自动生成章节清单（spawn，等待完成；失败时透出 gen-chapter-list 的具体原因）
   await new Promise((resolve, reject) => {
-    const child = spawn(NODE, [path.join(CODE_ROOT, "novelread", "gen-chapter-list.mjs"), base], { cwd: CODE_ROOT, stdio: "ignore" });
+    const child = spawn(NODE, [path.join(CODE_ROOT, "novelread", "gen-chapter-list.mjs"), base], {
+      cwd: CODE_ROOT,
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let errMsg = "";
+    child.stderr.on("data", (c) => { errMsg += c.toString(); });
     child.on("error", reject);
-    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`gen-chapter-list 退出码 ${code}`))));
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(errMsg.trim() || `gen-chapter-list 退出码 ${code}`))));
   });
   // 3. 启动建库任务
   const from = Number(body.from);

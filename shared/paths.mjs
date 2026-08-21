@@ -57,6 +57,9 @@ export const exprojectDir = path.join(storeDir, "exproject");
 /** 资产区：用户原稿（数据根下 mybook，与 store 平级，不可再生资产） */
 export const mybookDir = path.join(DATA_ROOT, "mybook");
 
+/** 产出区：成稿/报告（数据根下 output——打包后代码根只读，产出必须随数据走） */
+export const outputDir = path.join(DATA_ROOT, "output");
+
 /** 域标识常量 */
 export const DOMAIN = { MY: "my", EX: "ex" };
 
@@ -146,8 +149,8 @@ export function ensureDataDirs() {
   fs.mkdirSync(myprojectDir, { recursive: true });
   fs.mkdirSync(exprojectDir, { recursive: true });
   fs.mkdirSync(mybookDir, { recursive: true });
-  // output 是代码根下的成稿/报告目录（与 DATA_ROOT 解耦，兼容默认布局）
-  fs.mkdirSync(path.join(CODE_ROOT, "output"), { recursive: true });
+  // output 是数据根下的成稿/报告目录（打包后代码根只读，产出随数据走）
+  fs.mkdirSync(outputDir, { recursive: true });
 }
 
 /** 调试：打印路径 */

@@ -34,12 +34,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT } from "../../shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT } from "../../shared/paths.mjs";
 import { loadChatConfig } from "../../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sessionsDir = path.join(__dirname, "sessions");
-const outputDir = path.join(CODE_ROOT, "output", sessionId); // 最终稿按会话归档: output/<sessionId>/
+const outputDir = path.join(DATA_ROOT, "output", sessionId); // 最终稿按会话归档: output/<sessionId>/(数据根下)
 
 /* ---------- 参数 ---------- */
 const args = process.argv.slice(2);
