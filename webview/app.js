@@ -405,6 +405,51 @@
     }
   }
 
+  /* ================= 对我的书建库标注（mybook 原稿 → 语料 → 标注 → 向量 → 聚合） ================= */
+  async function annotateBook() {
+    const name = state.currentBook;
+    if (!name) { toast("请先选择一本书"); return; }
+    // 查该书已建库进度（my 域 project-meta.chaptersAnnotated = 续建起点）
+    let lastCh = 0;
+    try {
+      const d = await api("/api/projects");
+      lastCh = (d.projects || []).find((p) => p.name === name && p.domain === "my")?.meta?.chaptersAnnotated || 0;
+    } catch { /* 查不到按 0 */ }
+    const startCh = lastCh + 1; // 续建从最新章节的下一章开始
+    const defEnd = startCh + 29; // 默认一次续建 30 章（推荐单批上限）
+    const hint = lastCh > 0 ? `已建库至第 ${lastCh} 章，将从第 ${startCh} 章续建` : "尚未建库，将从第 1 章开始";
+    const endStr = prompt(
+      `对《${name}》建库标注（${hint}）\n\n` +
+      `· 输入终点章号 N = 从第 ${startCh} 章续建到第 N 章（推荐每次 ≤30 章）\n` +
+      `· 输入 0 = 全量建库（⚠ 从头建全书，一次开销很大，不推荐）\n` +
+      `· 输入 p = 补建指令（只补上次未完成的缺章）\n\n` +
+      `默认终点章号：`,
+      String(defEnd)
+    );
+    if (endStr === null) return; // 取消
+    const body = { name, domain: "my" }; // domain=my：server 从 mybook 原稿合成语料
+    const s = String(endStr).trim().toLowerCase();
+    if (s === "p") {
+      body.pending = true; // 补建指令
+    } else if (s === "0") {
+      body.from = 0; // 全量（服务器端转 --all）
+    } else {
+      const end = parseInt(s, 10);
+      if (!Number.isFinite(end) || end < startCh) { toast(`终点章号需 ≥ ${startCh}，已取消`); return; }
+      body.from = startCh; // 从最新章节之后续建
+      body.to = end;       // 到指定终点章
+    }
+    toast(`正在对《${name}》合成语料并建库…`);
+    try {
+      const r = await api("/api/tasks/import-book", { method: "POST", body: JSON.stringify(body) });
+      const modeDesc = body.pending ? "补建缺章" : body.to ? `续建第${body.from}~${body.to}章` : r.mode;
+      toast(`✅ 已开始建库《${r.name}》（${modeDesc}）`);
+      await loadRefPool(); // 刷新参考书池（我的书会以「我的」域出现）
+    } catch (err) {
+      toast(`建库失败: ${err.message}`);
+    }
+  }
+
   /* ================= AI 写作流程 ================= */
   async function startTask(kind, body) {
     const { taskId } = await api(`/api/tasks/${kind}`, { method: "POST", body: JSON.stringify(body) });
@@ -730,6 +775,7 @@
   function bind() {
     $("btnAddChapter").onclick = addChapter;
     $("btnNewBook").onclick = newBook;
+    $("btnAnnotateBook").onclick = annotateBook; // 对我的书建库标注
     $("bookSelect").onchange = onBookChange;
     // 顶栏「清空」= 清空编辑器（不落盘）；「保存」= 保存到 mybook 资产区
     $("btnNew").onclick = () => { if (vditor) vditor.setValue(""); };

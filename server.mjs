@@ -510,52 +510,118 @@ function apiSessionFinal(id) {
   return { ok: true, project, file: `${project}.final.txt`, content: fs.readFileSync(finalPath, "utf-8") };
 }
 
-/* ================= 导入参考书（上传语料 → 自动分章清单 → 启动建库） ================= */
+/* ================= 导入参考书 / 对我的书建库（上传语料 或 mybook 原稿 → 自动分章清单 → 启动建库） ================= */
 const CORPUS_NAME_RE = /^[\u4e00-\u9fa5A-Za-z0-9_·《》（）()]+$/; // 语料名白名单（防路径穿越）
+
+/** 中文数字转阿拉伯（章节标题行「第X章」用中文数字，与 gen-chapter-list 的识别一致） */
+const CN_NUMS = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九", "十"];
+function toCnNum(n) {
+  if (n <= 0) return "零";
+  if (n <= 10) return CN_NUMS[n];
+  if (n < 20) return "十" + (n % 10 ? CN_NUMS[n % 10] : "");
+  if (n < 100) {
+    const t = Math.floor(n / 10), o = n % 10;
+    return CN_NUMS[t] + "十" + (o ? CN_NUMS[o] : "");
+  }
+  if (n < 1000) {
+    const h = Math.floor(n / 100), r = n % 100;
+    return CN_NUMS[h] + "百" + (r ? (r < 10 ? "零" + CN_NUMS[r] : toCnNum(r)) : "");
+  }
+  const k = Math.floor(n / 1000), r = n % 1000;
+  return CN_NUMS[k] + "千" + (r ? (r < 100 ? "零" + toCnNum(r) : toCnNum(r)) : "");
+}
+
+/**
+ * 从 mybook 原稿合成语料 + 章节清单（对我的书建库：mybook/<书>/第XXXX章.md → corpus/<书>-语料.txt + 章节清单.csv）
+ * @returns {number} 章节数
+ */
+function synthCorpusFromMybook(base) {
+  const dir = path.join(mybookDir, base);
+  if (!fs.existsSync(dir)) throw new NovelyError("NOT_FOUND", { context: { name: base, kind: "book" } });
+  const files = fs.readdirSync(dir).filter((f) => /^第\d{4}章\.md$/.test(f)).sort();
+  if (!files.length) throw new NovelyError("ARG_REQUIRED", { context: { field: "chapters", hint: `${base} 尚无章节（mybook/<书>/ 下需有 第XXXX章.md）` } });
+  // 语料全文行 + 每章 [标题行, 正文起始行, 正文结束行, 标题]
+  const lines = [];
+  const rows = [];
+  for (const f of files) {
+    const num = Number(f.match(/^第(\d{4})章\.md$/)[1]);
+    let text = fs.readFileSync(path.join(dir, f), "utf-8").replace(/\r\n/g, "\n").replace(/^\uFEFF/, "");
+    const titleLine = text.split("\n")[0] ?? "";
+    const tm = titleLine.match(/^#\s+(.+)/);
+    const title = tm ? tm[1].trim() : "";
+    const bodyLines = tm ? text.split("\n").slice(1) : text.split("\n"); // 去掉标题行
+    // 标题行：第X章 <标题>（中文数字，与 gen-chapter-list 识别一致；正文从下一行起）
+    lines.push(`第${toCnNum(num)}章 ${title}`);
+    const start = lines.length; // 正文起始行（0-based slice 索引，标题行的下一行）
+    lines.push(...bodyLines);
+    const end = lines.length; // 正文结束行（0-based 半开 [start, end)，与 host-exec readChapterList 对齐）
+    const body = bodyLines.join("\n");
+    rows.push({ num, title: title || `第${num}章`, start, end, chars: body.replace(/\s/g, "").length });
+  }
+  fs.mkdirSync(corpusDir, { recursive: true });
+  fs.writeFileSync(path.join(corpusDir, `${base}-语料.txt`), lines.join("\n"), "utf-8");
+  // 章节清单 CSV（与 gen-chapter-list 输出格式一致：章号,标题,语料起始行,语料结束行,字符数）
+  const csv = "章号,标题,语料起始行,语料结束行,字符数\n" + rows.map((r) => `${r.num},${r.title},${r.start},${r.end},${r.chars}`).join("\n") + "\n";
+  fs.writeFileSync(path.join(corpusDir, `${base}-章节清单.csv`), csv, "utf-8");
+  console.log(`[import-book] mybook 合成语料完成: ${base}（${rows.length} 章）→ corpus/${base}-语料.txt + 章节清单.csv`);
+  return rows.length;
+}
 
 /**
  * POST /api/tasks/import-book
- *   { filename: "xxx.txt", content: "…语料全文…", from?: number }
- * 流程：保存 corpus/<名>-语料.txt → 自动生成章节清单(gen-chapter-list) → 启动 annotate 任务
- *       from=0/缺省 → --all（全量）；from=N>0 → --from=N（从第 N 章到末尾）
+ *   外部书：{ filename, content, from?, to? }——上传语料 txt → gen-chapter-list → annotate(ex)
+ *   我的书：{ name, from?, to?, pending? }——从 mybook 原稿合成语料 → annotate(my)
+ * from=0/缺省 → --all（全量）；from=N>0 → --from=N --to=M（续建范围）；pending → 补建缺章
  */
 async function apiImportBook(body) {
-  const filename = (body?.filename ?? "").trim();
-  const content = body?.content;
-  if (!filename || typeof content !== "string" || !content.trim()) {
-    throw new NovelyError("ARG_REQUIRED", { context: { field: "filename|content" } });
-  }
-  const base = filename.replace(/\.txt$/i, "").replace(/-语料$/, "").trim();
-  if (!base || !CORPUS_NAME_RE.test(base)) {
-    throw new NovelyError("ARG_INVALID", { context: { field: "filename", value: filename, rule: "仅中文/字母/数字等，去 .txt 后缀" } });
-  }
-  // 1. 保存语料
-  fs.mkdirSync(corpusDir, { recursive: true });
-  const corpusPath = path.join(corpusDir, `${base}-语料.txt`);
-  fs.writeFileSync(corpusPath, content, "utf-8");
-  // 2. 自动生成章节清单（spawn，等待完成；失败时透出 gen-chapter-list 的具体原因）
-  await new Promise((resolve, reject) => {
-    const [cmd, cmdArgs, cmdEnv] = runScriptArgs("novelread/gen-chapter-list.mjs", [base]); // SEA: exe run 自身
-    const child = spawn(cmd, cmdArgs, {
-      cwd: isSeaRuntime ? DATA_ROOT : CODE_ROOT, // pkg 下 snapshot 路径不可做 cwd
-      env: cmdEnv,
-      stdio: ["ignore", "ignore", "pipe"],
+  const domain = body?.domain === "my" ? DOMAIN.MY : DOMAIN.EX; // 默认外部（向后兼容）
+  let base;
+  if (domain === DOMAIN.MY) {
+    // 我的书：从 mybook 原稿合成语料 + 章节清单（不依赖上传 txt）
+    base = (body?.name ?? "").trim();
+    if (!base || !CORPUS_NAME_RE.test(base)) {
+      throw new NovelyError("ARG_INVALID", { context: { field: "name", value: base, rule: "仅中文/字母/数字等" } });
+    }
+    synthCorpusFromMybook(base);
+  } else {
+    // 外部书：上传语料 txt → 保存 → 自动生成章节清单
+    const filename = (body?.filename ?? "").trim();
+    const content = body?.content;
+    if (!filename || typeof content !== "string" || !content.trim()) {
+      throw new NovelyError("ARG_REQUIRED", { context: { field: "filename|content" } });
+    }
+    base = filename.replace(/\.txt$/i, "").replace(/-语料$/, "").trim();
+    if (!base || !CORPUS_NAME_RE.test(base)) {
+      throw new NovelyError("ARG_INVALID", { context: { field: "filename", value: filename, rule: "仅中文/字母/数字等，去 .txt 后缀" } });
+    }
+    // 1. 保存语料
+    fs.mkdirSync(corpusDir, { recursive: true });
+    const corpusPath = path.join(corpusDir, `${base}-语料.txt`);
+    fs.writeFileSync(corpusPath, content, "utf-8");
+    // 2. 自动生成章节清单（spawn，等待完成；失败时透出 gen-chapter-list 的具体原因）
+    await new Promise((resolve, reject) => {
+      const [cmd, cmdArgs, cmdEnv] = runScriptArgs("novelread/gen-chapter-list.mjs", [base]); // SEA: exe run 自身
+      const child = spawn(cmd, cmdArgs, {
+        cwd: isSeaRuntime ? DATA_ROOT : CODE_ROOT, // pkg 下 snapshot 路径不可做 cwd
+        env: cmdEnv,
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      let errMsg = "";
+      child.stderr.on("data", (c) => { errMsg += c.toString(); });
+      child.on("error", reject);
+      child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(errMsg.trim() || `gen-chapter-list 退出码 ${code}`))));
     });
-    let errMsg = "";
-    child.stderr.on("data", (c) => { errMsg += c.toString(); });
-    child.on("error", reject);
-    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(errMsg.trim() || `gen-chapter-list 退出码 ${code}`))));
-  });
+  }
   // 3. 启动建库任务
   const from = Number(body.from);
   const to = Number(body.to);
-  const taskArgs = { project: base, domain: DOMAIN.EX };
+  const taskArgs = { project: base, domain };
   if (body.pending) taskArgs.pending = true; // 补建指令：只补 pending 缺章
   else if (from > 0) { taskArgs.from = from; if (to > 0) taskArgs.to = to; } // 续建范围
   else taskArgs.all = true;
   const taskId = startTask("novelread/host-exec.mjs", taskArgsFor("annotate", taskArgs), "annotate");
   const modeDesc = body.pending ? "补建缺章" : from > 0 ? `从第${from}章续建${to > 0 ? `到第${to}章` : "到末尾"}` : "全量";
-  return { ok: true, name: base, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: modeDesc };
+  return { ok: true, name: base, domain, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: modeDesc };
 }
 
 /* ================= 路由 ================= */
