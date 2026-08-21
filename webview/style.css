@@ -179,6 +179,13 @@ body {
 /* 右栏 AI（写作按钮 + 输入需求 + 参考书 + 结果，内部三块可拖高） */
 #aiPanel { display: flex; flex-direction: column; overflow: hidden; }
 .ai-sec { flex-shrink: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+/* 输入区：输入框在上方占满本栏高度，AI 写作按钮在下方 */
+#aiInputSec {
+  display: flex; flex-direction: column; gap: 8px;
+  height: 160px; /* 初始高度；拖拽 splitter 调整时输入框随本栏伸缩 */
+}
+#aiInputSec #aiPrompt { flex: 1 1 auto; min-height: 60px; }
+#aiInputSec #btnGenerate { flex-shrink: 0; }
 #aiResultSec { flex: 1 1 auto; min-height: 90px; overflow-y: auto; padding: 0; border-bottom: none; }
 #aiResult { padding: 12px; }
 #aiPrompt {
