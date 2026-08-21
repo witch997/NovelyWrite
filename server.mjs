@@ -438,6 +438,28 @@ function apiOpenFolder(body) {
   return { ok: true, dir: key, path: target };
 }
 
+/* ================= 心跳（WebUI 关闭 → server 自动退出） =================
+ * 页面每 15s 发一次 POST /api/system/heartbeat；server 60s 无心跳 → 自动退出。
+ * 仅在页面激活过心跳后生效（未开页面的 CLI/API 使用不退出）。--no-heartbeat 关闭。
+ */
+let lastHeartbeat = null; // 页面最后心跳时间（null=页面未激活，不退出）
+
+/** POST /api/system/heartbeat — 页面存活心跳 */
+function apiHeartbeat() {
+  lastHeartbeat = Date.now();
+  return { ok: true };
+}
+
+/** 心跳检查定时器（main 内启动）：页面关闭后 60s 无心跳 → 退出进程 */
+function startHeartbeatWatch() {
+  setInterval(() => {
+    if (lastHeartbeat && Date.now() - lastHeartbeat > 60_000) {
+      console.log("\n[server] 未检测到 WebUI 心跳（页面已关闭），自动退出。");
+      process.exit(0);
+    }
+  }, 10_000);
+}
+
 /** 写作会话列表/详情（数据根 sessions/——SEA 只读区不可写，会话必须落真实磁盘） */
 function apiSessions() {
   const sessionsDir = writingSessionDir;
@@ -550,6 +572,7 @@ const ROUTES = [
   { m: "GET", p: /^\/api\/models\/(chat|writing|embed)$/, h: async (m) => apiModels(m[1]) },
   { m: "POST", p: /^\/api\/config\/keys$/, h: (_m, b) => apiSaveKeys(b) },
   { m: "POST", p: /^\/api\/system\/open-folder$/, h: (_m, body) => apiOpenFolder(body) },
+  { m: "POST", p: /^\/api\/system\/heartbeat$/, h: () => apiHeartbeat() },
   { m: "GET", p: /^\/api\/sessions$/, h: () => apiSessions() },
   { m: "GET", p: /^\/api\/sessions\/([^/]+)$/, h: (m) => apiSessionDetail(decodeURIComponent(m[1])) },
   { m: "GET", p: /^\/api\/tasks$/, h: () => ({ tasks: listTasks().map((t) => ({ id: t.id, label: t.label, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code })) }) },
@@ -789,6 +812,7 @@ export function main() {
   const args = process.argv.slice(2);
   const port = Number((args.find((a) => a.startsWith("--port=")) ?? "--port=3081").split("=")[1]);
   const host = (args.find((a) => a.startsWith("--host=")) ?? "--host=127.0.0.1").split("=")[1];
+  if (!args.includes("--no-heartbeat")) startHeartbeatWatch(); // WebUI 关闭 → 自动退出（--no-heartbeat 关闭）
   server.listen(port, host, () => {
     // 动态端口：--port=0 时由系统分配，此处取真实端口（必然空闲，杜绝端口冲突）
     const actualPort = server.address().port;

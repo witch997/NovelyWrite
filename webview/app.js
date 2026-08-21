@@ -763,6 +763,10 @@
     loadRefPool(); // 参考书池(跨书参考源选择)
     loadBooks();   // 我的书(mybook 资产区)
     applyAutoSaveSetting(); // 定时自动保存（设置间隔，默认 5 分钟）
+    // WebUI 心跳：每 15s 上报存活；页面关闭后 server 60s 无心跳自动退出
+    setInterval(() => {
+      fetch("/api/system/heartbeat", { method: "POST" }).catch(() => {});
+    }, 15000);
   }
 
   init();
