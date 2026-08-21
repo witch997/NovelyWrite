@@ -427,26 +427,38 @@
     const left = $("paneLeft"), right = $("paneRight");
     const spLeft = document.querySelector('.splitter-v[data-split="left"]');
     const spRight = document.querySelector('.splitter-v[data-split="right"]');
-    const inputSec = $("aiInputSec"), refSec = $("aiRefSec");
+    const panel = document.getElementById("aiPanel");
+    const inputSec = $("aiInputSec"), refSec = $("aiRefSec"), resultSec = $("aiResultSec");
     const spH1 = document.querySelector('.splitter-h[data-split="aiInput"]');
     const spH2 = document.querySelector('.splitter-h[data-split="aiRef"]');
+    const SPLIT_H = 10; // 两条行高拖拽条总高
 
-    // 恢复记忆尺寸（右栏内行高同时做面板边界保护，防历史越界值残留）
+    // 恢复记忆尺寸（列宽）
     const savedL = Number(localStorage.getItem("nw-left-w"));
     const savedR = Number(localStorage.getItem("nw-right-w"));
     if (savedL > 0) left.style.width = Math.min(savedL, layoutW() * 0.6) + "px";
     if (savedR > 0) right.style.width = Math.min(savedR, layoutW() * 0.6) + "px";
+    // 恢复记忆尺寸（输入/参考书区行高）
     const savedH1 = Number(localStorage.getItem("nw-ai-input-h"));
     const savedH2 = Number(localStorage.getItem("nw-ai-ref-h"));
-    const panel = document.getElementById("aiPanel");
-    const panelH = panel.getBoundingClientRect().height || 600;
-    if (savedH1 > 0) inputSec.style.height = Math.max(110, Math.min(savedH1, panelH - 220)) + "px";
-    if (savedH2 > 0) refSec.style.height = Math.max(60, Math.min(savedH2, panelH - 150)) + "px";
+    if (savedH1 >= 110) inputSec.style.height = savedH1 + "px";
+    if (savedH2 >= 60) refSec.style.height = savedH2 + "px";
+
+    /** 重算成稿区高度 = 面板高 − 输入区 − 参考书区 − 分隔条（三块严格互补，成稿区永不覆盖上方） */
+    function layoutAiPanel() {
+      const panelH = panel.getBoundingClientRect().height;
+      if (!panelH) return;
+      const inputH = inputSec.getBoundingClientRect().height;
+      const refH = refSec.getBoundingClientRect().height;
+      resultSec.style.height = Math.max(80, panelH - inputH - refH - SPLIT_H) + "px";
+    }
+    layoutAiPanel();
 
     /** 列宽拖拽（左栏向右增宽 / 右栏向左增宽） */
     function dragCol(spEl, target, saveKey, isLeft) {
-      spEl.addEventListener("mousedown", (e) => {
+      spEl.addEventListener("pointerdown", (e) => {
         e.preventDefault();
+        spEl.setPointerCapture?.(e.pointerId);
         spEl.classList.add("dragging");
         const startX = e.clientX;
         const startW = target.getBoundingClientRect().width;
@@ -455,43 +467,49 @@
           const w = Math.max(140, Math.min(startW + (isLeft ? delta : -delta), layoutW() * 0.6));
           target.style.width = w + "px";
         };
-        const up = () => {
+        const up = (ev) => {
           spEl.classList.remove("dragging");
-          document.removeEventListener("mousemove", move);
-          document.removeEventListener("mouseup", up);
+          spEl.releasePointerCapture?.(ev.pointerId);
+          document.removeEventListener("pointermove", move);
+          document.removeEventListener("pointerup", up);
+          document.removeEventListener("pointercancel", up);
           localStorage.setItem(saveKey, String(Math.round(target.getBoundingClientRect().width)));
         };
-        document.addEventListener("mousemove", move);
-        document.addEventListener("mouseup", up);
+        document.addEventListener("pointermove", move);
+        document.addEventListener("pointerup", up);
+        document.addEventListener("pointercancel", up);
       });
     }
 
-    /** 行高拖拽（调整上块高度，下块自适应；minH=最小高度，限制在面板内防拖穿） */
+    /** 行高拖拽：只调目标块高度（带 clamp），成稿区高度由 layoutAiPanel 重算。
+     *  pointer events + setPointerCapture：鼠标移出窗口也不丢事件，杜绝卡死。 */
     function dragRow(spEl, target, saveKey, minH) {
-      spEl.addEventListener("mousedown", (e) => {
+      spEl.addEventListener("pointerdown", (e) => {
         e.preventDefault();
+        spEl.setPointerCapture?.(e.pointerId);
         spEl.classList.add("dragging");
         const startY = e.clientY;
         const startH = target.getBoundingClientRect().height;
-        const panel = document.getElementById("aiPanel");
+        const other = target === inputSec ? refSec : inputSec; // 另一块固定高度
         const move = (ev) => {
-          let h = startH + (ev.clientY - startY);
-          // 上限 = 面板高度 − 其他区块【实时实际高度】和 − 分隔条（精确防覆盖/挤出）
-          const others = [...panel.querySelectorAll(".ai-sec")].filter((el) => el !== target);
-          const othersH = others.reduce((a, el) => a + el.getBoundingClientRect().height, 0);
-          const splitH = panel.querySelectorAll(".splitter-h").length * 5;
-          const maxH = panel.getBoundingClientRect().height - othersH - splitH;
-          h = Math.min(h, maxH);
-          target.style.height = Math.max(minH, h) + "px";
+          const panelH = panel.getBoundingClientRect().height;
+          const otherH = other.getBoundingClientRect().height;
+          const maxH = panelH - otherH - 80 - SPLIT_H; // 给成稿区至少留 80px
+          const h = Math.max(minH, Math.min(startH + (ev.clientY - startY), maxH));
+          target.style.height = h + "px";
+          layoutAiPanel(); // 成稿区跟随重算
         };
-        const up = () => {
+        const up = (ev) => {
           spEl.classList.remove("dragging");
-          document.removeEventListener("mousemove", move);
-          document.removeEventListener("mouseup", up);
+          spEl.releasePointerCapture?.(ev.pointerId);
+          document.removeEventListener("pointermove", move);
+          document.removeEventListener("pointerup", up);
+          document.removeEventListener("pointercancel", up);
           localStorage.setItem(saveKey, String(Math.round(target.getBoundingClientRect().height)));
         };
-        document.addEventListener("mousemove", move);
-        document.addEventListener("mouseup", up);
+        document.addEventListener("pointermove", move);
+        document.addEventListener("pointerup", up);
+        document.addEventListener("pointercancel", up);
       });
     }
 
@@ -499,6 +517,7 @@
     dragCol(spRight, right, "nw-right-w", false);
     dragRow(spH1, inputSec, "nw-ai-input-h", 110); // 输入区：需容纳按钮+输入框
     dragRow(spH2, refSec, "nw-ai-ref-h", 60);       // 参考书区：标题+可滚动列表
+    window.addEventListener("resize", () => layoutAiPanel());
   }
 
   /* ================= 主题切换 ================= */
