@@ -39,6 +39,7 @@
     timer: null, minimized: false, dragging: null, // {startX, startY, origLeft, origTop, moved}
     cards: new Map(), // taskId → {el, name, status, logEl, barEl, doneAt, failed}
     done: [],         // 已结束任务快照（失败驻留）
+    dismissed: new Set(), // 用户已关闭的历史失败卡（localStorage 持久化，刷新不复活）
     init() {
       this.el = $("taskBar");
       this.head = $("taskBarHead");
@@ -46,6 +47,11 @@
       this.count = $("taskBarCount");
       this.toggle = $("taskBarToggle");
       if (!this.el) return;
+      // 恢复已关闭的历史失败卡（localStorage；上次会话关闭的不再出现）
+      try {
+        const arr = JSON.parse(localStorage.getItem("nw-taskbar-dismissed") || "[]");
+        if (Array.isArray(arr)) for (const id of arr) if (typeof id === "string") this.dismissed.add(id);
+      } catch { /* 记录损坏忽略 */ }
       // 恢复上次拖动位置（localStorage）；无记录 → 保持 CSS 默认（右下角）
       try {
         const pos = JSON.parse(localStorage.getItem("nw-taskbar-pos") || "null");
@@ -106,8 +112,16 @@
         preprocess: "🎬 分镜", recall: "🔍 召回", writedraft: "✍️ 成稿",
       };
       const base = map[t.label] ?? t.label ?? "任务";
-      const arg = t.args?.[0] && !t.args[0].startsWith("--") ? t.args[0] : "";
-      return arg ? `${base}《${arg}》` : base;
+      const args = t.args ?? [];
+      // annotate: --corpus=X；其他任务: 第一个非 -- 参数（项目名）
+      const corpusArg = args.find((a) => a.startsWith("--corpus="));
+      const arg = corpusArg
+        ? corpusArg.slice("--corpus=".length)
+        : args.find((a) => !a.startsWith("--")) ?? "";
+      if (!arg) return base;
+      // 书名本身可能带《》→ 不重复包裹；去书名号统一显示《X》
+      const clean = arg.replace(/^《|》$/g, "");
+      return `${base}《${clean}》`;
     },
     /** 从日志提取进度: annotate → 完成章/总数；聚合/AI → 阶段百分比 */
     progressFrom(log) {
@@ -156,7 +170,21 @@
         }
         for (const t of tasks.filter((x) => x.status !== "running")) {
           const card = this.cards.get(t.id);
-          if (card && !card.failed && card.status !== t.status) this.finishCard(t, card);
+          if (card && !card.failed && card.status !== t.status) await this.finishCard(t, card);
+        }
+        // 历史失败/被杀任务（页面刷新后可见，供一键重跑）：
+        // 最近的 3 个建库失败/被杀任务自动建卡；先查 stale——使命已完成(缺章已补齐) → 显示✅后收起，不再红卡驻留
+        const hist = tasks
+          .filter((x) => (x.status === "failed" || x.status === "killed") && x.script === "novelread/host-exec.mjs")
+          .slice(0, 3);
+        for (const t of hist) {
+          if (this.cards.has(t.id) || this.dismissed.has(t.id)) continue;
+          let stale = false;
+          try { const s = await api(`/api/tasks/${t.id}/stale`); stale = !!s.stale; } catch { /* 查不到按需重跑处理 */ }
+          if (stale) { this.dismissTask(t.id); continue; } // 已补齐 → 静默收起（不打扰）
+          this.ensureCard(t);
+          const card = this.cards.get(t.id);
+          if (card) await this.finishCard(t, card); // 立即转终态（红卡 + 重跑/关闭）
         }
         this.refreshCount();
         // 无任务且无失败驻留 → 自动隐藏
@@ -201,21 +229,37 @@
         }
       } catch { /* 日志拉取失败忽略 */ }
     },
-    /** 任务结束：成功→绿+短暂展示后收起；失败→红+驻留 */
-    finishCard(t, card) {
+    /** 任务结束：成功→绿+短暂展示后收起；失败/被杀→红+驻留（stale 已补齐→绿+收起） */
+    async finishCard(t, card) {
       const ok = t.status === "success";
+      const killed = t.status === "killed";
       card.status = t.status;
       card.failed = !ok;
       card.el.classList.remove("running");
       card.el.classList.add(ok ? "success" : "failed");
       const st = card.el.querySelector(".task-card-status");
-      st.textContent = ok ? "✅ 完成" : "❌ 失败";
+      st.textContent = ok ? "✅ 完成" : killed ? "⏹ 已停止" : "❌ 失败";
       st.className = "task-card-status " + (ok ? "success" : "failed");
       card.barEl.style.width = ok ? "100%" : "100%";
       const act = card.el.querySelector(".task-card-actions");
       if (act) act.remove();
-      // 失败 → 拉一次日志显示错误行 + 驻留（可手动关闭 / 重跑）
+      // 失败/被杀 → 拉一次日志显示错误行 + 驻留（可手动关闭 / 重跑）
       if (!ok) {
+        // 先查 stale：该任务使命已完成（缺章已被其他任务补齐）→ 显示✅已补齐后自动收起，不红卡驻留
+        if (t.script === "novelread/host-exec.mjs") {
+          try {
+            const s = await api(`/api/tasks/${t.id}/stale`);
+            if (s.stale) {
+              st.textContent = "✅ 已补齐";
+              st.className = "task-card-status success";
+              card.el.classList.remove("failed");
+              card.el.classList.add("success");
+              this.dismissTask(t.id);
+              setTimeout(() => { if (this.cards.has(t.id)) this.removeCard(t.id); }, 2500);
+              return;
+            }
+          } catch { /* 查不到按需重跑处理 */ }
+        }
         (async () => {
           try {
             const { log } = await api(`/api/tasks/${t.id}/log`);
@@ -237,7 +281,8 @@
               const r = await api(`/api/tasks/${t.id}/rerun`, { method: "POST" });
               if (r.rerun) {
                 toast(`🔄 已重跑《${this.name}》：${r.mode || "续跑"}`);
-                // 旧卡收起（标记已重跑，避免与新任务卡混淆）；新任务会被下一轮轮询自动建卡
+                // 旧卡收起 + 标记已处理（磁盘状态仍是 failed，防下轮 poll 重建）
+                this.dismissTask(t.id);
                 this.removeCard(t.id);
                 this.done = this.done.filter((d) => d.id !== t.id);
               } else {
@@ -250,7 +295,7 @@
         const close = document.createElement("button");
         close.className = "btn btn-sm";
         close.textContent = "关闭";
-        close.onclick = () => { this.removeCard(t.id); this.done = this.done.filter((d) => d.id !== t.id); };
+        close.onclick = () => { this.dismissTask(t.id); this.removeCard(t.id); this.done = this.done.filter((d) => d.id !== t.id); };
         actRow.appendChild(close);
         card.el.appendChild(actRow);
       } else {
@@ -266,6 +311,11 @@
       const visible = this.cards.size > 0 || this.done.length > 0;
       this.el.classList.toggle("visible", visible);
       this.refreshCount();
+    },
+    /** 标记历史失败卡已处理（关闭/重跑）并持久化，刷新后不再自动出现 */
+    dismissTask(id) {
+      this.dismissed.add(id);
+      try { localStorage.setItem("nw-taskbar-dismissed", JSON.stringify([...this.dismissed])); } catch { /* ignore */ }
     },
     refreshCount() {
       const running = [...this.cards.values()].filter((c) => c.status === "running").length;

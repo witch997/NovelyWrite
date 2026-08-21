@@ -529,7 +529,13 @@ function apiTaskRerun(id) {
 }
 
 /** annotate 智能续跑：todo − 已标注 → 缺失章；无法推导范围/清单缺失 → null（调用方走原参数重跑） */
-function smartRerunAnnotate(args) {
+/**
+ * annotate 任务范围状态：todo（原任务应标章）− done（已标注章）= missing（缺章）
+ * @returns {null|{corpus, domain, todo:number[], done:Set<number>, missing:number[], reason?:string}}
+ *   null = 无法推导范围（清单缺失/参数无法解析）→ 调用方走原参数重跑
+ *   reason 存在 = 明确"无需重跑"（如 pending 为空 / 无缺章）
+ */
+function annotateRangeState(args) {
   const argVal = (n) => { const a = args.find((x) => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : null; };
   const corpus = argVal("corpus");
   const domain = argVal("domain") ?? DOMAIN.EX;
@@ -545,6 +551,8 @@ function smartRerunAnnotate(args) {
     }
   }
   if (!allNums.length) return null;
+  // 书名显示归一（corpus 名可能自带《》→ 去外层重复包裹）
+  const displayName = corpus.replace(/^《|》$/g, "");
   // 2. 从原参数推导本次范围 todo
   let todo = null;
   if (args.includes("--all")) todo = allNums;
@@ -559,6 +567,10 @@ function smartRerunAnnotate(args) {
       const pend = JSON.parse(fs.readFileSync(path.join(projectRoot(corpus, domain), "pending.json"), "utf-8"));
       todo = (pend.pending ?? []).map((x) => x.chapter);
     } catch { /* pending 缺失 → 无法推导 */ }
+    // pending 无缺章 → 明确"无需重跑"，不启动注定失败的任务（原 --pending 会报"无未完成章"退出）
+    if (!todo?.length) {
+      return { corpus, domain, todo: [], done: new Set(), missing: [], reason: `无缺章（《${displayName}》pending.json 无未完成章）` };
+    }
   }
   if (!todo?.length) return null;
   // 3. 已标注章（扫 章节/ 目录，排除 章节表.json）
@@ -572,12 +584,27 @@ function smartRerunAnnotate(args) {
   }
   // 4. 缺失 = todo − done（保持 todo 顺序）
   const missing = todo.filter((n) => !done.has(n));
-  if (!missing.length) {
-    return { rerun: false, reason: `无缺章（《${corpus}》范围内 ${todo.length} 章全部已标注）` };
-  }
-  const newArgs = [`--corpus=${corpus}`, `--domain=${domain}`, `--chapter=${missing.join(",")}`];
+  return { corpus, domain, todo, done, missing, reason: missing.length ? null : `无缺章（《${displayName}》范围内 ${todo.length} 章全部已标注）` };
+}
+
+function smartRerunAnnotate(args) {
+  const st = annotateRangeState(args);
+  if (!st) return null; // 无法推导 → 调用方原参数重跑
+  if (st.reason) return { rerun: false, reason: st.reason };
+  const newArgs = [`--corpus=${st.corpus}`, `--domain=${st.domain}`, `--chapter=${st.missing.join(",")}`];
   const taskId = startTask("novelread/host-exec.mjs", newArgs, "annotate");
-  return { rerun: true, taskId, mode: `智能续跑：补 ${missing.length} 章（${missing.join(",")}）`, missing };
+  return { rerun: true, taskId, mode: `智能续跑：补 ${st.missing.length} 章（${st.missing.join(",")}）`, missing: st.missing };
+}
+
+/** 任务是否"使命已完成"（failed/killed 卡降级用）：范围 todo − done 为空 → stale=true 已补齐 */
+function apiTaskStale(id) {
+  const t = listTasks().find((x) => x.id === id);
+  if (!t) throw new NovelyError("NOT_FOUND", { context: { id, kind: "task" } });
+  if (t.script !== "novelread/host-exec.mjs") return { stale: false, reason: "仅建库任务可判断" };
+  const st = annotateRangeState(t.args ?? []);
+  if (!st) return { stale: false, reason: "无法推导任务范围（清单缺失）" };
+  if (st.reason) return { stale: true, reason: st.reason, done: st.todo.length };
+  return { stale: false, reason: `缺 ${st.missing.length} 章（${st.missing.slice(0, 10).join(",")}${st.missing.length > 10 ? "…" : ""}）`, missing: st.missing };
 }
 
 /* ================= 导入参考书 / 对我的书建库（上传语料 或 mybook 原稿 → 自动分章清单 → 启动建库） ================= */
@@ -720,8 +747,14 @@ const ROUTES = [
   { m: "GET", p: /^\/api\/tasks$/, h: () => ({ tasks: listTasks().map((t) => ({ id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code })) }) },
   { m: "GET", p: /^\/api\/tasks\/([^/]+)$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, args: t.args }; } },
   { m: "GET", p: /^\/api\/tasks\/([^/]+)\/log$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, status: t.status, log: loadTaskLog(t.id) }; } },
-  { m: "POST", p: /^\/api\/tasks\/([^/]+)\/kill$/, h: (m) => { const t = taskState.get(m[1]); if (t && t.status === "running") { t.status = "killed"; t.finishedAt = new Date().toISOString(); } return { ok: true }; } },
+  { m: "POST", p: /^\/api\/tasks\/([^/]+)\/kill$/, h: (m) => {
+    // 内存任务（真子进程）；磁盘遗留 running 任务（服务器重启后僵尸态）也一并标记 killed
+    const t = taskState.get(m[1]) ?? listTasks().find((x) => x.id === m[1]);
+    if (t && t.status === "running") { t.status = "killed"; t.finishedAt = new Date().toISOString(); persistTask(t); }
+    return { ok: true };
+  } },
   { m: "POST", p: /^\/api\/tasks\/([^/]+)\/rerun$/, h: (m) => apiTaskRerun(m[1]) },
+  { m: "GET", p: /^\/api\/tasks\/([^/]+)\/stale$/, h: (m) => apiTaskStale(m[1]) },
   { m: "POST", p: /^\/api\/tasks\/annotate$/, h: (_m, b) => ({ taskId: startTask("novelread/host-exec.mjs", taskArgsFor("annotate", b), "annotate") }) },
   { m: "POST", p: /^\/api\/tasks\/aggregate$/, h: (_m, b) => ({ taskId: startTask("novelread/aggregates.mjs", taskArgsFor("aggregate", b), "aggregate") }) },
   { m: "POST", p: /^\/api\/tasks\/fix$/, h: (_m, b) => ({ taskId: startTask("novelread/fix.mjs", taskArgsFor("fix", b), "fix") }) },
@@ -963,6 +996,39 @@ export function main() {
   const args = process.argv.slice(2);
   const port = Number((args.find((a) => a.startsWith("--port=")) ?? "--port=3081").split("=")[1]);
   const host = (args.find((a) => a.startsWith("--host=")) ?? "--host=127.0.0.1").split("=")[1];
+  // 启动时清理僵尸任务：磁盘遗留的 running 任务 = 上一次 server 已退出、子进程已终止
+  //（本进程新起，无任何子进程存活）→ 标记 killed，避免前端任务栏永久「进行中」
+  {
+    let cleaned = 0;
+    for (const t of listTasks()) {
+      if (t.status === "running") {
+        t.status = "killed";
+        t.finishedAt = new Date().toISOString();
+        t.error = t.error ?? "服务器重启，任务进程已终止";
+        persistTask(t);
+        cleaned++;
+      }
+    }
+    if (cleaned) console.log(`[server] 清理 ${cleaned} 个僵尸任务（上次服务器退出遗留，已标记 killed）`);
+  }
+  // 启动时清理 stale 任务记录：failed/killed 的建库任务若使命已完成（范围缺章已补齐）
+  // → 任务记录 + 日志一并删除，防 store/_tasks 无限堆积（前端也不显示已补齐卡）
+  {
+    let purged = 0;
+    const tdir = path.join(storeDir, "_tasks");
+    for (const t of listTasks()) {
+      if (!(t.status === "failed" || t.status === "killed") || t.script !== "novelread/host-exec.mjs") continue;
+      try {
+        const st = annotateRangeState(t.args ?? []);
+        if (st?.reason) { // 无缺章 = 已补齐
+          fs.rmSync(path.join(tdir, `${t.id}.json`), { force: true });
+          fs.rmSync(path.join(tdir, "log", `${t.id}.log`), { force: true });
+          purged++;
+        }
+      } catch { /* 单任务判断失败跳过（不误删） */ }
+    }
+    if (purged) console.log(`[server] 清理 ${purged} 个 stale 任务记录（failed/killed 且缺章已补齐，已删除）`);
+  }
   if (!args.includes("--no-heartbeat")) startHeartbeatWatch(); // WebUI 关闭 → 自动退出（--no-heartbeat 关闭）
   server.listen(port, host, () => {
     // 动态端口：--port=0 时由系统分配，此处取真实端口（必然空闲，杜绝端口冲突）
