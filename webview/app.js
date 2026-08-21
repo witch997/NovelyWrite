@@ -374,21 +374,24 @@
     const fromStr = prompt(
       `导入《${base}》——选择建库范围（${hint}）\n\n` +
       `· 输入 0 = 全量建库（从头开始）\n` +
-      `· 输入 N = 从第 N 章建到末尾（续建用）\n\n` +
+      `· 输入 N = 从第 N 章建到末尾（续建用）\n` +
+      `· 输入 p = 补建指令（只补上次未完成的缺章）\n\n` +
       `默认起始章号：`,
       String(lastCh || 0)
     );
     if (fromStr === null) return; // 取消
-    const from = parseInt(fromStr, 10);
-    if (!Number.isFinite(from) || from < 0) { toast("章号非法，已取消"); return; }
+    const body = { filename: file.name, content: await file.text() };
+    if (String(fromStr).toLowerCase() === "p") {
+      body.pending = true; // 补建指令
+    } else {
+      const from = parseInt(fromStr, 10);
+      if (!Number.isFinite(from) || from < 0) { toast("章号非法，已取消"); return; }
+      body.from = from;
+    }
     toast(`正在导入《${base}》并生成章节清单…`);
     try {
-      const text = await file.text();
-      const r = await api("/api/tasks/import-book", {
-        method: "POST",
-        body: JSON.stringify({ filename: file.name, content: text, from }),
-      });
-      toast(`✅ 已开始建库《${r.name}》（${r.mode === "all" ? "全量" : `从第${from}章到末尾`}）`);
+      const r = await api("/api/tasks/import-book", { method: "POST", body: JSON.stringify(body) });
+      toast(`✅ 已开始建库《${r.name}》（${body.pending ? "补建缺章" : r.mode === "all" ? "全量" : `从第${body.from}章到末尾`}）`);
       await loadRefPool(); // 刷新参考书池
     } catch (err) {
       toast(`导入失败: ${err.message}`);

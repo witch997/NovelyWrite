@@ -549,7 +549,8 @@ async function apiImportBook(body) {
   // 3. 启动建库任务
   const from = Number(body.from);
   const taskArgs = { project: base, domain: DOMAIN.EX };
-  if (from > 0) taskArgs.from = from;
+  if (body.pending) taskArgs.pending = true; // 补建指令：只补 pending 缺章
+  else if (from > 0) taskArgs.from = from;
   else taskArgs.all = true;
   const taskId = startTask("novelread/host-exec.mjs", taskArgsFor("annotate", taskArgs), "annotate");
   return { ok: true, name: base, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: from > 0 ? `from-${from}` : "all" };
@@ -601,6 +602,7 @@ function taskArgsFor(kind, b) {
       a.push(`--corpus=${b.project}`, `--domain=${b.domain ?? DOMAIN.EX}`);
       if (b.all) a.push("--all");
       else if (b.chapter) a.push(...String(b.chapter).split(",").map((n) => `--chapter=${n.trim()}`));
+      else if (b.pending) a.push("--pending"); // 补建指令：只补 pending 缺章
       else if (b.from) a.push(`--from=${Number(b.from)}`); // 从第 N 章建到清单末尾
       else throw new NovelyError("ARG_REQUIRED", { context: { field: "all|chapter|from" } });
       break;

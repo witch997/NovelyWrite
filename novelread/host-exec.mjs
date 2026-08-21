@@ -270,6 +270,7 @@ export async function main(argv = cliArgs()) {
   const domain = argVal("domain") ?? DOMAIN.EX; // 默认外部知识库；--domain=my 我的作品
   const chapterArgs = argVal("chapter");
   const doAll = args.includes("--all");
+  const pendingOnly = args.includes("--pending"); // 补建指令：只跑 pending.json 里未完成的章
   const fromN = argVal("from") ? Number(argVal("from")) : null; // --from=N: 从第 N 章建到清单末尾
   const chapters = doAll ? null : (chapterArgs ? chapterArgs.split(",").map(Number) : null);
   chatCfg = loadChatConfig(); // 惰性读配置（main 调用时——被 import 时不可读，全新目录无 config 会炸）
@@ -299,6 +300,14 @@ export async function main(argv = cliArgs()) {
   if (!list.length) throw new Error(`章节清单为空: ${LIST_PATH ?? "未找到 <语料名>-章节清单.csv 或 章节清单.csv"}`);
   console.log(`[host] 语料 ${corpusName}，共 ${list.length} 章，清单: ${LIST_PATH}`);
 
+  // 补建指令 --pending：从 pending.json 读未完成章号（先读,供 todo 计算）
+  const pendingNums = (() => {
+    try {
+      const p = JSON.parse(fs.readFileSync(path.join(PROJECT_DIR, "pending.json"), "utf-8"));
+      return (p.pending ?? []).map((x) => x.chapter).filter(Boolean);
+    } catch { return []; }
+  })();
+
   // 消耗统计（LLM 调用次数 / token / 耗时）
   const COST = { calls: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, elapsedMs: 0 };
   const startedAt = new Date().toISOString();
@@ -307,10 +316,11 @@ export async function main(argv = cliArgs()) {
     ? list
     : list.filter((c) => {
         if (chapters) return chapters.includes(c.number);
-        if (fromN) return c.number >= fromN; // --from=N：从第 N 章到清单末尾
+        if (fromN) return c.number >= fromN; // --from=N：从第 N 章建到清单末尾
+        if (pendingOnly) return pendingNums.includes(c.number); // --pending：只补未完成章
         return false;
       });
-  if (!todo.length) throw new Error(`没有要处理的章: ${chapters ? chapters.join(",") : fromN ? `从${fromN}章起` : "all"}`);
+  if (!todo.length) throw new Error(`没有要处理的章: ${pendingOnly ? `pending 无未完成章（可 --all 全量）` : chapters ? chapters.join(",") : fromN ? `从${fromN}章起` : "all"}`);
 
   const existing = walkProject(PROJECT_DIR);
   const chapterIssues = [];
@@ -368,7 +378,7 @@ export async function main(argv = cliArgs()) {
     const stale = pend.pending.filter((x) => !todoNums.has(x.chapter)); // 本次未覆盖的遗留
     if (stale.length) {
       console.log(`\n⚠ 检测到 ${stale.length} 章上次未完成（pending.json）: ${stale.map((x) => `第${x.chapter}章`).join("、")}`);
-      console.log(`  本次任务未覆盖这些章——可 --all 或 --chapter=${stale.map((x) => x.chapter).join(",")} 补跑\n`);
+      console.log(`  本次任务未覆盖这些章——可用补建指令补跑: --pending（只补缺章）或 --all（全量）\n`);
     }
   }
 
