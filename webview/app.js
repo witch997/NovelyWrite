@@ -36,7 +36,7 @@
    */
   const taskBar = {
     el: null, head: null, body: null, count: null, toggle: null,
-    timer: null, minimized: false,
+    timer: null, minimized: false, dragging: null, // {startX, startY, origLeft, origTop, moved}
     cards: new Map(), // taskId → {el, name, status, logEl, barEl, doneAt, failed}
     done: [],         // 已结束任务快照（失败驻留）
     init() {
@@ -46,7 +46,50 @@
       this.count = $("taskBarCount");
       this.toggle = $("taskBarToggle");
       if (!this.el) return;
-      this.head.onclick = () => this.toggleMin();
+      // 恢复上次拖动位置（localStorage）；无记录 → 保持 CSS 默认（右下角）
+      try {
+        const pos = JSON.parse(localStorage.getItem("nw-taskbar-pos") || "null");
+        if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) {
+          this.el.style.left = `${pos.left}px`;
+          this.el.style.top = `${pos.top}px`;
+          this.el.style.right = "auto";
+          this.el.style.bottom = "auto";
+        }
+      } catch { /* 位置记录损坏忽略 */ }
+      // 拖动：按住标题条拖动（最小化按钮除外）；松开时无位移=点击(最小化)，有位移=落位记忆
+      this.head.addEventListener("mousedown", (e) => {
+        if (e.target === this.toggle) return;
+        const r = this.el.getBoundingClientRect();
+        this.dragging = { startX: e.clientX, startY: e.clientY, origLeft: r.left, origTop: r.top, moved: false };
+        e.preventDefault();
+      });
+      document.addEventListener("mousemove", (e) => {
+        if (!this.dragging) return;
+        const d = this.dragging;
+        if (!d.moved && (Math.abs(e.clientX - d.startX) > 3 || Math.abs(e.clientY - d.startY) > 3)) d.moved = true;
+        if (!d.moved) return;
+        this.el.classList.add("dragging");
+        const left = Math.max(4, Math.min(window.innerWidth - this.el.offsetWidth - 4, d.origLeft + (e.clientX - d.startX)));
+        const top = Math.max(4, Math.min(window.innerHeight - this.el.offsetHeight - 4, d.origTop + (e.clientY - d.startY)));
+        this.el.style.left = `${left}px`;
+        this.el.style.top = `${top}px`;
+        this.el.style.right = "auto";
+        this.el.style.bottom = "auto";
+      });
+      document.addEventListener("mouseup", () => {
+        if (!this.dragging) return;
+        this.el.classList.remove("dragging");
+        const wasMove = this.dragging.moved;
+        this.dragging = null;
+        if (wasMove) {
+          // 拖动结束 → 记忆位置
+          try {
+            localStorage.setItem("nw-taskbar-pos", JSON.stringify({ left: parseFloat(this.el.style.left), top: parseFloat(this.el.style.top) }));
+          } catch { /* ignore */ }
+        } else {
+          this.toggleMin(); // 无位移 → 视为点击标题条：最小化/展开
+        }
+      });
       this.toggle.onclick = (e) => { e.stopPropagation(); this.toggleMin(); };
       this.timer = setInterval(() => this.poll(), 1500);
       this.poll(); // 立即来一轮
@@ -171,7 +214,7 @@
       card.barEl.style.width = ok ? "100%" : "100%";
       const act = card.el.querySelector(".task-card-actions");
       if (act) act.remove();
-      // 失败 → 拉一次日志显示错误行 + 驻留（可手动关闭）
+      // 失败 → 拉一次日志显示错误行 + 驻留（可手动关闭 / 重跑）
       if (!ok) {
         (async () => {
           try {
@@ -181,12 +224,35 @@
           } catch { /* ignore */ }
         })();
         this.done.push({ id: t.id, el: card.el });
-        // 失败卡片提供关闭按钮
+        // 失败卡片提供 重跑（仅 annotate）+ 关闭
+        const actRow = document.createElement("div");
+        actRow.className = "task-card-actions";
+        if (t.script === "novelread/host-exec.mjs") {
+          const rerun = document.createElement("button");
+          rerun.className = "btn btn-sm btn-primary";
+          rerun.textContent = "🔄 重跑";
+          rerun.title = "智能续跑：只补未标注/失败的章";
+          rerun.onclick = async () => {
+            try {
+              const r = await api(`/api/tasks/${t.id}/rerun`, { method: "POST" });
+              if (r.rerun) {
+                toast(`🔄 已重跑《${this.name}》：${r.mode || "续跑"}`);
+                // 旧卡收起（标记已重跑，避免与新任务卡混淆）；新任务会被下一轮轮询自动建卡
+                this.removeCard(t.id);
+                this.done = this.done.filter((d) => d.id !== t.id);
+              } else {
+                toast(`无需重跑: ${r.reason || "无缺章"}`);
+              }
+            } catch (e) { toast(`重跑失败: ${e.message}`); }
+          };
+          actRow.appendChild(rerun);
+        }
         const close = document.createElement("button");
         close.className = "btn btn-sm";
         close.textContent = "关闭";
         close.onclick = () => { this.removeCard(t.id); this.done = this.done.filter((d) => d.id !== t.id); };
-        card.el.appendChild(close);
+        actRow.appendChild(close);
+        card.el.appendChild(actRow);
       } else {
         // 成功 → 3.5s 后收起（若用户已关闭则跳过）
         setTimeout(() => { if (this.cards.has(t.id) && !card.failed) this.removeCard(t.id); }, 3500);

@@ -510,6 +510,76 @@ function apiSessionFinal(id) {
   return { ok: true, project, file: `${project}.final.txt`, content: fs.readFileSync(finalPath, "utf-8") };
 }
 
+/* ================= 任务重跑（失败/被杀 → 智能续跑） =================
+ * annotate：从原任务参数推导本次范围(todo) − 已标注章(章节/目录) = 缺失章 → --chapter=缺失
+ *           只补缺章，不重标已成功章（省 LLM）；无缺章 → rerun:false + 原因
+ * 其他任务（aggregate/fix/AI 链）：原参数重跑（聚合/fix 增量幂等；AI 链重新生成）
+ */
+function apiTaskRerun(id) {
+  const t = listTasks().find((x) => x.id === id);
+  if (!t) throw new NovelyError("NOT_FOUND", { context: { id, kind: "task" } });
+  if (t.status === "running") throw new NovelyError("ARG_INVALID", { context: { id, rule: "任务仍在运行，不能重跑" } });
+  const args = t.args ?? [];
+  if (t.script === "novelread/host-exec.mjs") {
+    const smart = smartRerunAnnotate(args);
+    if (smart) return smart; // { rerun:true, taskId, mode } | { rerun:false, reason }
+  }
+  const taskId = startTask(t.script, args, t.label);
+  return { rerun: true, taskId, mode: "原参数重跑" };
+}
+
+/** annotate 智能续跑：todo − 已标注 → 缺失章；无法推导范围/清单缺失 → null（调用方走原参数重跑） */
+function smartRerunAnnotate(args) {
+  const argVal = (n) => { const a = args.find((x) => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : null; };
+  const corpus = argVal("corpus");
+  const domain = argVal("domain") ?? DOMAIN.EX;
+  if (!corpus) return null;
+  // 1. 读章节清单 → 全部章号
+  const allNums = [];
+  const listPath = path.join(corpusDir, `${corpus}-章节清单.csv`);
+  if (fs.existsSync(listPath)) {
+    const lines = fs.readFileSync(listPath, "utf-8").replace(/\r\n/g, "\n").split("\n");
+    for (let i = 1; i < lines.length; i++) {
+      const m = lines[i].trim().match(/^(\d+),/);
+      if (m) allNums.push(Number(m[1]));
+    }
+  }
+  if (!allNums.length) return null;
+  // 2. 从原参数推导本次范围 todo
+  let todo = null;
+  if (args.includes("--all")) todo = allNums;
+  else if (argVal("from")) {
+    const from = Number(argVal("from")), to = argVal("to") ? Number(argVal("to")) : Infinity;
+    todo = allNums.filter((n) => n >= from && n <= to);
+  } else if (argVal("chapter")) {
+    todo = String(argVal("chapter")).split(",").map(Number);
+  } else if (args.includes("--pending")) {
+    // 补建任务重跑：范围 = pending.json 缺章
+    try {
+      const pend = JSON.parse(fs.readFileSync(path.join(projectRoot(corpus, domain), "pending.json"), "utf-8"));
+      todo = (pend.pending ?? []).map((x) => x.chapter);
+    } catch { /* pending 缺失 → 无法推导 */ }
+  }
+  if (!todo?.length) return null;
+  // 3. 已标注章（扫 章节/ 目录，排除 章节表.json）
+  const done = new Set();
+  const chDir = path.join(projectRoot(corpus, domain), "章节");
+  if (fs.existsSync(chDir)) {
+    for (const f of fs.readdirSync(chDir)) {
+      const m = f.match(/^第(\d{4})章\.json$/);
+      if (m) done.add(Number(m[1]));
+    }
+  }
+  // 4. 缺失 = todo − done（保持 todo 顺序）
+  const missing = todo.filter((n) => !done.has(n));
+  if (!missing.length) {
+    return { rerun: false, reason: `无缺章（《${corpus}》范围内 ${todo.length} 章全部已标注）` };
+  }
+  const newArgs = [`--corpus=${corpus}`, `--domain=${domain}`, `--chapter=${missing.join(",")}`];
+  const taskId = startTask("novelread/host-exec.mjs", newArgs, "annotate");
+  return { rerun: true, taskId, mode: `智能续跑：补 ${missing.length} 章（${missing.join(",")}）`, missing };
+}
+
 /* ================= 导入参考书 / 对我的书建库（上传语料 或 mybook 原稿 → 自动分章清单 → 启动建库） ================= */
 const CORPUS_NAME_RE = /^[\u4e00-\u9fa5A-Za-z0-9_·《》（）()]+$/; // 语料名白名单（防路径穿越）
 
@@ -647,10 +717,11 @@ const ROUTES = [
   { m: "POST", p: /^\/api\/system\/heartbeat$/, h: () => apiHeartbeat() },
   { m: "GET", p: /^\/api\/sessions$/, h: () => apiSessions() },
   { m: "GET", p: /^\/api\/sessions\/([^/]+)$/, h: (m) => apiSessionDetail(decodeURIComponent(m[1])) },
-  { m: "GET", p: /^\/api\/tasks$/, h: () => ({ tasks: listTasks().map((t) => ({ id: t.id, label: t.label, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code })) }) },
-  { m: "GET", p: /^\/api\/tasks\/([^/]+)$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, label: t.label, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, args: t.args }; } },
+  { m: "GET", p: /^\/api\/tasks$/, h: () => ({ tasks: listTasks().map((t) => ({ id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code })) }) },
+  { m: "GET", p: /^\/api\/tasks\/([^/]+)$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, args: t.args }; } },
   { m: "GET", p: /^\/api\/tasks\/([^/]+)\/log$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, status: t.status, log: loadTaskLog(t.id) }; } },
   { m: "POST", p: /^\/api\/tasks\/([^/]+)\/kill$/, h: (m) => { const t = taskState.get(m[1]); if (t && t.status === "running") { t.status = "killed"; t.finishedAt = new Date().toISOString(); } return { ok: true }; } },
+  { m: "POST", p: /^\/api\/tasks\/([^/]+)\/rerun$/, h: (m) => apiTaskRerun(m[1]) },
   { m: "POST", p: /^\/api\/tasks\/annotate$/, h: (_m, b) => ({ taskId: startTask("novelread/host-exec.mjs", taskArgsFor("annotate", b), "annotate") }) },
   { m: "POST", p: /^\/api\/tasks\/aggregate$/, h: (_m, b) => ({ taskId: startTask("novelread/aggregates.mjs", taskArgsFor("aggregate", b), "aggregate") }) },
   { m: "POST", p: /^\/api\/tasks\/fix$/, h: (_m, b) => ({ taskId: startTask("novelread/fix.mjs", taskArgsFor("fix", b), "fix") }) },

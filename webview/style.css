@@ -281,11 +281,12 @@ body {
 #taskBar.minimized .task-bar-body { display: none; }
 .task-bar-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 8px 12px; cursor: pointer;
+  padding: 8px 12px; cursor: move;
   background: var(--bg-module);
   border-bottom: 1px solid var(--border);
   user-select: none;
 }
+#taskBar.dragging .task-bar-head { cursor: grabbing; }
 .task-bar-title { font-weight: 700; font-size: 13px; }
 .task-bar-count { color: var(--label-secondary); font-size: 12px; flex: 1; }
 .task-bar-min {
