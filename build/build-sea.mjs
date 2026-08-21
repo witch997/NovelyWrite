@@ -31,8 +31,8 @@ execFileSync(rollupCmd[0], rollupCmd[1], { cwd: ROOT, stdio: "inherit" });
 console.log("[sea] 生成 blob（--experimental-sea-config）...");
 execFileSync(process.execPath, ["--experimental-sea-config", "sea-config.json"], { cwd: ROOT, stdio: "inherit" });
 
-// 3. 复制 node.exe → dist/NovelyWrite.exe
-const distDir = path.join(ROOT, "dist");
+// 3. 复制 node.exe → ../dist/NovelyWrite.exe
+const distDir = path.join(ROOT, "..", "dist");
 fs.mkdirSync(distDir, { recursive: true });
 const outExe = path.join(distDir, "NovelyWrite.exe");
 fs.copyFileSync(process.execPath, outExe);

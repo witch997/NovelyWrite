@@ -9,15 +9,15 @@
  * 各任务脚本 main 内部用 cliArgs() 读取参数（无前缀，原样）。
  * 注意：不得出现模块顶层 await（rollup CJS 转换不支持）。
  */
-import { main as serverMain } from "./server.mjs";
-import * as hostExec from "./novelread/host-exec.mjs";
-import * as aggregates from "./novelread/aggregates.mjs";
-import * as fix from "./novelread/fix.mjs";
-import * as preprocess from "./features/shot-writing/preprocess.mjs";
-import * as recall from "./features/shot-writing/recall.mjs";
-import * as writedraft from "./features/shot-writing/writedraft.mjs";
-import * as checkChapter from "./novelread/check-chapter.mjs";
-import * as genList from "./novelread/gen-chapter-list.mjs";
+import { main as serverMain } from "../server.mjs";
+import * as hostExec from "../novelread/host-exec.mjs";
+import * as aggregates from "../novelread/aggregates.mjs";
+import * as fix from "../novelread/fix.mjs";
+import * as preprocess from "../features/shot-writing/preprocess.mjs";
+import * as recall from "../features/shot-writing/recall.mjs";
+import * as writedraft from "../features/shot-writing/writedraft.mjs";
+import * as checkChapter from "../novelread/check-chapter.mjs";
+import * as genList from "../novelread/gen-chapter-list.mjs";
 
 const runScript = process.env.NOVELYWRITE_RUN;
 
