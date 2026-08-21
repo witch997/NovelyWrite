@@ -398,22 +398,37 @@
     }
   }
 
-  /** 成稿直显：把最终 final 文本完整传入 AI 成稿窗口（顶端默认在栏顶端） */
+  /** 成稿直显：读 output/<项目名>.final.txt（纯正文，无分镜标签），顶端默认在栏顶端 */
   async function showFinalDraft() {
     try {
-      const s = await api(`/api/sessions/${state.sessionId}`);
-      const draftEntry = Object.entries(s.drafts ?? {})[0];
-      if (!draftEntry) { setAiStatus("成稿文件未找到"); return; }
-      const text = draftEntry[1] || "";
+      const d = await api(`/api/sessions/${state.sessionId}/final`);
+      if (!d.ok) { setAiStatus(`成稿未找到: ${d.reason}`); return; }
       aiResult.innerHTML = `
-        <div class="draft-title">📄 AI 成稿 · ${escapeHtml(draftEntry[0])}</div>
-        <div class="draft-text">${escapeHtml(text)}</div>`;
+        <div class="draft-title">
+          <span>📄 AI 成稿 · ${escapeHtml(d.file)}</span>
+          <button class="btn btn-sm btn-primary" onclick="window.__insertDraft()">↪ 插入到写作栏</button>
+        </div>
+        <div class="draft-text">${escapeHtml(d.content)}</div>`;
       // 结果顶端默认在本栏顶端（不滚动即看到开头）
       const sec = document.getElementById("aiResultSec");
       if (sec) sec.scrollTop = 0;
     } catch (e) {
       setAiStatus(`读取成稿失败: ${e.message}`);
     }
+  }
+
+  /** 把成稿全文插入当前章节编辑器（不走剪贴板，完整保留段落/换行排版） */
+  function insertDraftToEditor() {
+    if (!state.currentBook || !state.currentChapter) { toast("请先在中间栏打开一个章节"); return; }
+    if (!vditor) return;
+    const el = aiResult.querySelector(".draft-text");
+    const text = el ? el.textContent : "";
+    if (!text.trim()) { toast("成稿为空"); return; }
+    const cur = vditor.getValue();
+    const sep = cur && cur.trim() ? "\n\n" : "";
+    vditor.setValue((cur.replace(/\s+$/, "") || "") + sep + text);
+    saveChapter(true);
+    toast("✅ 已插入到当前章节并保存");
   }
 
   function escapeHtml(s) {
@@ -616,6 +631,8 @@
     $("btnGenerate").onclick = aiWrite;
     // 顶栏模型选择器
     $("modelSelect").onchange = onModelChange;
+    // 成稿区"插入到写作栏"
+    window.__insertDraft = insertDraftToEditor;
     // 设置
     $("btnSettings").onclick = openSettings;
     $("btnSettingsClose").onclick = closeSettings;

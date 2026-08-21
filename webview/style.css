@@ -239,7 +239,8 @@ body {
 /* ===== AI 成稿区（成稿直显） ===== */
 .ai-status { color: var(--label-secondary); font-size: 13px; padding: 14px; line-height: 1.8; }
 .draft-title {
-  padding: 10px 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 8px 12px;
   font-size: 12px; font-weight: 600; color: var(--label-secondary);
   border-bottom: 1px solid var(--border);
   background: var(--bg-module);
