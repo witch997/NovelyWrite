@@ -10,6 +10,7 @@
  * 注意：不得出现模块顶层 await（rollup CJS 转换不支持）。
  */
 import { main as serverMain } from "../server.mjs";
+import net from "node:net";
 import * as hostExec from "../novelread/host-exec.mjs";
 import * as aggregates from "../novelread/aggregates.mjs";
 import * as fix from "../novelread/fix.mjs";
@@ -47,6 +48,17 @@ if (runScript) {
     }
   })();
 } else {
-  process.argv.push("--open"); // exe 双击默认自动打开浏览器（源码模式可加 --no-open? 保留手动控制）
-  serverMain(); // 正常启动 HTTP 服务
+  // 双击启动：默认自动打开浏览器；3081 被占用(如源码版在跑)→ 自动换动态端口
+  (async () => {
+    process.argv.push("--open");
+    if (!process.argv.some((a) => a.startsWith("--port="))) {
+      const used = await new Promise((resolve) => {
+        const s = net.connect({ port: 3081, host: "127.0.0.1" });
+        s.on("connect", () => { s.destroy(); resolve(true); });
+        s.on("error", () => resolve(false));
+      });
+      if (used) process.argv.push("--port=0"); // 3081 被占 → 动态端口(必然空闲)
+    }
+    serverMain(); // 正常启动 HTTP 服务
+  })();
 }
