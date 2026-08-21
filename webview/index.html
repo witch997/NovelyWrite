@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NovelyWrite · AI 写作工作台</title>
+<link rel="stylesheet" href="/vendor/vditor/vditor.min.css">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- ===== 顶栏 ===== -->
+<header class="topbar">
+  <div class="topbar-left">
+    <span class="brand">✍ NovelyWrite</span>
+    <span class="env-status" id="envStatus">配置检测中…</span>
+  </div>
+  <div class="topbar-right">
+    <span class="model-badge" id="modelBadge">模型: --</span>
+    <button id="btnOpenFolder" class="btn btn-ghost" title="打开数据目录">📂 打开文件夹</button>
+    <button id="btnNew" class="btn" title="清空当前章节">📄 新建</button>
+    <button id="btnSave" class="btn btn-primary" title="保存到本地">💾 保存</button>
+    <button id="btnGenerate" class="btn btn-accent" title="根据输入生成分镜并写作">✨ AI 写作</button>
+    <button id="btnSettings" class="btn" title="设置">⚙ 设置</button>
+  </div>
+</header>
+
+<!-- ===== 三栏主体 ===== -->
+<main class="layout">
+  <!-- 左栏:大纲/章节/会话 -->
+  <aside class="pane pane-left">
+    <div class="pane-header">
+      <span>大纲</span>
+      <button class="btn btn-sm" id="btnAddChapter">+ 章</button>
+    </div>
+    <div class="pane-body" id="outlineList">
+      <div class="placeholder">暂无章节<br>点击「+ 章」新建</div>
+    </div>
+  </aside>
+
+  <!-- 中栏:正文 Markdown 编辑器(Vditor) -->
+  <section class="pane pane-center">
+    <div class="pane-header">
+      <span id="currentChapterTitle">未命名章节</span>
+      <span class="word-count" id="wordCount">0 字</span>
+    </div>
+    <div class="pane-body editor-wrap">
+      <!-- Vditor 挂载点 -->
+      <div id="vditor"></div>
+    </div>
+  </section>
+
+  <!-- 右栏:AI 参考 / 分镜 / 任务日志 -->
+  <aside class="pane pane-right">
+    <div class="pane-header">
+      <span>AI 参考</span>
+    </div>
+    <div class="pane-body" id="aiPanel">
+      <div class="ai-toolbar">
+        <textarea id="aiPrompt" placeholder="输入剧情/分镜需求，AI 将检索参考并写作…" rows="4"></textarea>
+        <button id="btnGenShots" class="btn btn-sm btn-accent">生成分镜序列</button>
+      </div>
+      <div id="aiResult" class="ai-result">
+        <div class="placeholder">AI 生成结果将显示在这里</div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<!-- 底部任务日志条(可折叠) -->
+<footer class="taskbar" id="taskbar">
+  <div class="taskbar-header" id="taskbarToggle">
+    <span>任务日志</span>
+    <span class="taskbar-status" id="taskStatus">空闲</span>
+  </div>
+  <div class="taskbar-body" id="taskLog"></div>
+</footer>
+
+<!-- ===== 设置面板(模态) ===== -->
+<div class="modal-mask" id="settingsMask">
+  <div class="modal">
+    <div class="modal-header">
+      <span>设置</span>
+      <button class="modal-close" id="btnSettingsClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <!-- 外观 -->
+      <div class="setting-group">
+        <div class="setting-group-title">外观</div>
+        <div class="setting-row">
+          <label>主题</label>
+          <div class="ctrl">
+            <div class="theme-switch" id="themeSwitch">
+              <span class="ts-item" data-theme="light">浅色</span>
+              <span class="ts-item" data-theme="dark">深色</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LLM 配置 -->
+      <div class="setting-group">
+        <div class="setting-group-title">LLM(写作模型)</div>
+        <div class="setting-row">
+          <label>全局模型</label>
+          <div class="ctrl"><input class="input" id="setChatModel" placeholder="如 deepseek-v4-flash"></div>
+        </div>
+        <div class="setting-row">
+          <label>写作模型(shot-writing)</label>
+          <div class="ctrl"><input class="input" id="setFeatModel" placeholder="覆盖全局,留空继承"></div>
+        </div>
+        <div class="setting-row">
+          <label>温度</label>
+          <div class="ctrl"><input class="input" id="setTemperature" type="number" step="0.1" min="0" max="2" placeholder="0.8"></div>
+        </div>
+        <div class="setting-row">
+          <label>chat API key</label>
+          <div class="ctrl"><span class="key-status" id="chatKeyStatus">检测中</span></div>
+        </div>
+        <div class="setting-row">
+          <label>embed API key</label>
+          <div class="ctrl"><span class="key-status" id="embedKeyStatus">检测中</span></div>
+        </div>
+      </div>
+
+      <!-- 数据目录 -->
+      <div class="setting-group">
+        <div class="setting-group-title">数据目录</div>
+        <div class="folder-grid" id="folderGrid">
+          <button class="folder-btn" data-dir="data"><div class="fb-name">数据根</div><div class="fb-path">…</div></button>
+          <button class="folder-btn" data-dir="store"><div class="fb-name">store(标注/派生)</div><div class="fb-path">…</div></button>
+          <button class="folder-btn" data-dir="mybook"><div class="fb-name">mybook(原稿)</div><div class="fb-path">…</div></button>
+          <button class="folder-btn" data-dir="corpus"><div class="fb-name">corpus(语料)</div><div class="fb-path">…</div></button>
+          <button class="folder-btn" data-dir="output"><div class="fb-name">output(成稿)</div><div class="fb-path">…</div></button>
+          <button class="folder-btn" data-dir="webview"><div class="fb-name">webview(前端)</div><div class="fb-path">…</div></button>
+        </div>
+      </div>
+
+      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:8px;border-top:1px solid var(--border)">
+        <button class="btn btn-ghost" id="btnSettingsCancel">取消</button>
+        <button class="btn btn-primary" id="btnSettingsSave">保存设置</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 脚本 ===== -->
+<script src="/vendor/vditor/vditor.min.js"></script>
+<script src="/app.js"></script>
+</body>
+</html>
