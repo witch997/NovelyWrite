@@ -8,67 +8,71 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<!-- ===== 顶栏 ===== -->
+<!-- ===== 顶栏：书选择 + 新建书（书切换在上方） ===== -->
 <header class="topbar">
   <div class="topbar-left">
     <span class="brand">✍ NovelyWrite</span>
+    <select id="bookSelect" class="book-select" title="选择我的书"></select>
+    <button id="btnNewBook" class="btn btn-sm" title="新建书">+ 书</button>
     <span class="env-status" id="envStatus">配置检测中…</span>
   </div>
   <div class="topbar-right">
     <span class="model-badge" id="modelBadge">模型: --</span>
     <button id="btnOpenFolder" class="btn btn-ghost" title="打开数据目录">📂 打开文件夹</button>
-    <button id="btnNew" class="btn" title="清空当前章节">📄 新建</button>
-    <button id="btnSave" class="btn btn-primary" title="保存到本地">💾 保存</button>
-    <button id="btnGenerate" class="btn btn-accent" title="根据输入生成分镜并写作">✨ AI 写作</button>
     <button id="btnSettings" class="btn" title="设置">⚙ 设置</button>
   </div>
 </header>
 
-<!-- ===== 三栏主体 ===== -->
+<!-- ===== 三栏主体（可拖拽调宽） ===== -->
 <main class="layout">
-  <!-- 左栏:书本/章节大纲 -->
-  <aside class="pane pane-left">
+  <!-- 左栏：章选择 + 新建章（书已上移） -->
+  <aside class="pane pane-left" id="paneLeft">
     <div class="pane-header">
-      <span>大纲</span>
+      <span>章节</span>
       <button class="btn btn-sm" id="btnAddChapter" title="当前书新建章节">+ 章</button>
-    </div>
-    <div class="book-bar">
-      <select id="bookSelect" class="book-select" title="选择我的书"></select>
-      <button class="btn btn-sm" id="btnNewBook" title="新建书">+ 书</button>
     </div>
     <div class="pane-body" id="outlineList">
       <div class="placeholder">先选择或新建一本书<br>再「+ 章」开始写作</div>
     </div>
   </aside>
+  <div class="splitter-v" data-split="left"></div>
 
-  <!-- 中栏:正文 Markdown 编辑器(Vditor) -->
+  <!-- 中栏：写作编辑器（保存/清空在此） -->
   <section class="pane pane-center">
     <div class="pane-header">
       <span id="currentChapterTitle">未命名章节</span>
-      <span class="word-count" id="wordCount">0 字</span>
+      <div class="editor-actions">
+        <span class="word-count" id="wordCount">0 字</span>
+        <button id="btnNew" class="btn btn-sm" title="清空编辑器内容">清空</button>
+        <button id="btnSave" class="btn btn-sm btn-primary" title="保存到 mybook">💾 保存</button>
+      </div>
     </div>
     <div class="pane-body editor-wrap">
-      <!-- Vditor 挂载点 -->
       <div id="vditor"></div>
     </div>
   </section>
+  <div class="splitter-v" data-split="right"></div>
 
-  <!-- 右栏:AI 参考 / 分镜 / 任务日志 -->
-  <aside class="pane pane-right">
+  <!-- 右栏：AI 参考（写作按钮 + 输入需求 + 参考书 + 结果，内部可调高） -->
+  <aside class="pane pane-right" id="paneRight">
     <div class="pane-header">
       <span>AI 参考</span>
     </div>
     <div class="pane-body" id="aiPanel">
-      <div class="ai-toolbar">
-        <textarea id="aiPrompt" placeholder="输入剧情/分镜需求，AI 将检索参考并写作…" rows="4"></textarea>
-        <button id="btnGenShots" class="btn btn-sm btn-accent">生成分镜序列</button>
+      <div class="ai-sec" id="aiInputSec">
+        <button id="btnGenerate" class="btn btn-accent" style="width:100%;margin-bottom:8px">✨ AI 写作</button>
+        <textarea id="aiPrompt" placeholder="输入剧情需求，AI 将自动生成分镜并写作成稿…" rows="4"></textarea>
       </div>
-      <div class="ref-pool">
+      <div class="splitter-h" data-split="aiInput"></div>
+      <div class="ai-sec" id="aiRefSec">
         <div class="ref-pool-title">参考书（勾选 = 只从这些书召回；不选 = 全库跨书）</div>
         <div id="refPoolList" class="ref-pool-list"><span class="muted">加载中…</span></div>
       </div>
-      <div id="aiResult" class="ai-result">
-        <div class="placeholder">AI 生成结果将显示在这里</div>
+      <div class="splitter-h" data-split="aiRef"></div>
+      <div class="ai-sec ai-result-sec" id="aiResultSec">
+        <div id="aiResult" class="ai-result">
+          <div class="placeholder">AI 生成结果将显示在这里</div>
+        </div>
       </div>
     </div>
   </aside>
@@ -88,70 +92,35 @@
   <div class="modal">
     <div class="modal-header">
       <span>设置</span>
-      <button class="modal-close" id="btnSettingsClose">✕</button>
+      <button class="btn btn-sm" id="btnSettingsClose">✕</button>
     </div>
     <div class="modal-body">
-      <!-- 外观 -->
+      <div class="setting-group-title">LLM(写作模型)</div>
       <div class="setting-group">
-        <div class="setting-group-title">外观</div>
-        <div class="setting-row">
-          <label>主题</label>
-          <div class="ctrl">
-            <div class="theme-switch" id="themeSwitch">
-              <span class="ts-item" data-theme="light">浅色</span>
-              <span class="ts-item" data-theme="dark">深色</span>
-            </div>
-          </div>
-        </div>
+        <label class="setting-row">
+          <span>写作模型(shot-writing)</span>
+          <input id="setShotModel" placeholder="如 deepseek-v4-pro">
+        </label>
+        <label class="setting-row">
+          <span>写作温度</span>
+          <input id="setShotTemp" type="number" step="0.1" min="0" max="2" placeholder="0.8">
+        </label>
       </div>
-
-      <!-- LLM 配置 -->
+      <div class="setting-group-title">目录</div>
       <div class="setting-group">
-        <div class="setting-group-title">LLM(写作模型)</div>
-        <div class="setting-row">
-          <label>全局模型</label>
-          <div class="ctrl"><input class="input" id="setChatModel" placeholder="如 deepseek-v4-flash"></div>
-        </div>
-        <div class="setting-row">
-          <label>写作模型(shot-writing)</label>
-          <div class="ctrl"><input class="input" id="setFeatModel" placeholder="覆盖全局,留空继承"></div>
-        </div>
-        <div class="setting-row">
-          <label>温度</label>
-          <div class="ctrl"><input class="input" id="setTemperature" type="number" step="0.1" min="0" max="2" placeholder="0.8"></div>
-        </div>
-        <div class="setting-row">
-          <label>chat API key</label>
-          <div class="ctrl"><span class="key-status" id="chatKeyStatus">检测中</span></div>
-        </div>
-        <div class="setting-row">
-          <label>embed API key</label>
-          <div class="ctrl"><span class="key-status" id="embedKeyStatus">检测中</span></div>
-        </div>
+        <button class="btn btn-sm folder-btn" data-dir="data">数据根</button>
+        <button class="btn btn-sm folder-btn" data-dir="mybook">我的原稿(mybook)</button>
+        <button class="btn btn-sm folder-btn" data-dir="store">标注数据(store)</button>
+        <button class="btn btn-sm folder-btn" data-dir="output">输出(output)</button>
       </div>
-
-      <!-- 数据目录 -->
-      <div class="setting-group">
-        <div class="setting-group-title">数据目录</div>
-        <div class="folder-grid" id="folderGrid">
-          <button class="folder-btn" data-dir="data"><div class="fb-name">数据根</div><div class="fb-path">…</div></button>
-          <button class="folder-btn" data-dir="store"><div class="fb-name">store(标注/派生)</div><div class="fb-path">…</div></button>
-          <button class="folder-btn" data-dir="mybook"><div class="fb-name">mybook(原稿)</div><div class="fb-path">…</div></button>
-          <button class="folder-btn" data-dir="corpus"><div class="fb-name">corpus(语料)</div><div class="fb-path">…</div></button>
-          <button class="folder-btn" data-dir="output"><div class="fb-name">output(成稿)</div><div class="fb-path">…</div></button>
-          <button class="folder-btn" data-dir="webview"><div class="fb-name">webview(前端)</div><div class="fb-path">…</div></button>
-        </div>
-      </div>
-
-      <div style="display:flex;justify-content:flex-end;gap:8px;padding-top:8px;border-top:1px solid var(--border)">
-        <button class="btn btn-ghost" id="btnSettingsCancel">取消</button>
-        <button class="btn btn-primary" id="btnSettingsSave">保存设置</button>
-      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="btnSettingsCancel">取消</button>
+      <button class="btn btn-primary" id="btnSettingsSave">保存</button>
     </div>
   </div>
 </div>
 
-<!-- ===== 脚本 ===== -->
 <script src="/vendor/vditor/vditor.min.js"></script>
 <script src="/app.js"></script>
 </body>

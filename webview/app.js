@@ -293,21 +293,56 @@
     }, 1500);
   }
 
-  /** ① 生成分镜序列(preprocess) */
-  async function genShots() {
+  /** AI 写作全流程：输入剧情需求 → preprocess(分镜) → recall(召回) → writedraft(成稿) */
+  async function aiWrite() {
     const prompt = $("aiPrompt").value.trim();
     if (!prompt) { aiResult.innerHTML = '<div class="placeholder">请先输入剧情需求</div>'; return; }
-    aiResult.innerHTML = '<div class="placeholder">正在生成分镜序列…</div>';
+    if (state.busy) return;
+    state.busy = true;
+    aiResult.innerHTML = '<div class="placeholder">AI 生成中：正在生成分镜序列…</div>';
     try {
-      const taskId = await startTask("preprocess", { input: prompt });
-      pollTask(taskId, async (t) => {
-        if (t.status !== "success") { aiResult.innerHTML = `<div class="placeholder">分镜生成失败</div>`; return; }
-        // 从任务日志找 sessionId,或从最近会话取
-        await refreshSessionFromTask(taskId);
+      const preId = await startTask("preprocess", { input: prompt });
+      pollTask(preId, async (t) => {
+        if (t.status !== "success") { aiResult.innerHTML = '<div class="placeholder">❌ 分镜生成失败（见任务日志）</div>'; state.busy = false; return; }
+        await refreshSessionFromTask(preId); // 渲染分镜卡片到 aiResult
+        if (!state.sessionId) { aiResult.innerHTML = '<div class="placeholder">会话 id 未找到（查看任务日志）</div>'; state.busy = false; return; }
+        const refBooks = selectedRefBooks();
+        taskStatus.textContent = refBooks.length ? `参考源: ${refBooks.join(" + ")}` : "参考源: 全库跨书";
+        aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">AI 生成中：正在召回参考…</div>');
+        const recallId = await startTask("recall", { session: state.sessionId, topk: 6, projects: refBooks });
+        pollTask(recallId, async (t2) => {
+          if (t2.status !== "success") { taskStatus.textContent = "recall 失败"; state.busy = false; return; }
+          aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">AI 生成中：正在写作成稿…</div>');
+          const draftId = await startTask("writedraft", { session: state.sessionId, projects: refBooks });
+          pollTask(draftId, async (dt) => {
+            state.busy = false;
+            if (dt.status !== "success") { taskStatus.textContent = "写作失败"; aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">❌ 成稿失败（见任务日志）</div>'); return; }
+            taskStatus.textContent = "✅ 成稿完成";
+            await showDraftResult();
+          });
+        });
       });
     } catch (e) {
-      aiResult.innerHTML = `<div class="placeholder">错误: ${e.message}</div>`;
+      state.busy = false;
+      taskStatus.textContent = `AI 写作失败: ${e.message}`;
     }
+  }
+
+  /** 成稿完成后展示：分镜上方已渲染，此处追加成稿预览 */
+  async function showDraftResult() {
+    try {
+      const s = await api(`/api/sessions/${state.sessionId}`);
+      const draftEntry = Object.entries(s.drafts ?? {})[0];
+      let html = '<div style="padding:10px 2px 4px;font-weight:600;font-size:13px">✅ 成稿预览</div>';
+      if (draftEntry) {
+        const text = draftEntry[1] || "";
+        html += `<div class="shot-card" style="white-space:pre-wrap;line-height:1.7;font-size:13px">${escapeHtml(text.slice(0, 3000))}${text.length > 3000 ? "…" : ""}</div>`;
+        html += `<div style="font-size:11px;color:var(--label-tertiary)">文件: ${escapeHtml(draftEntry[0])}（完整内容见该文件）</div>`;
+      } else {
+        html += '<div class="placeholder">成稿文件未找到</div>';
+      }
+      aiResult.insertAdjacentHTML("beforeend", html);
+    } catch { /* 展示失败忽略 */ }
   }
 
   /** 从任务日志提取 sessionId 并加载分镜 */
@@ -337,6 +372,7 @@
   function renderShots(shots) {
     if (!shots.length) { aiResult.innerHTML = '<div class="placeholder">分镜序列为空</div>'; return; }
     aiResult.innerHTML = "";
+    aiResult.insertAdjacentHTML("afterbegin", '<div style="padding:2px 0 8px;font-weight:600;font-size:13px">分镜序列（AI 自动生成）</div>');
     for (const s of shots) {
       const card = document.createElement("div");
       card.className = "shot-card";
@@ -349,38 +385,82 @@
         <div class="shot-content">${escapeHtml(s.content || "")}</div>`;
       aiResult.appendChild(card);
     }
-    aiResult.insertAdjacentHTML("beforeend",
-      `<div style="padding:8px 0"><button class="btn btn-accent btn-sm" onclick="window.__writeDraft()">② 生成正文(AI 写作)</button></div>`);
   }
 
   function escapeHtml(s) {
     return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   }
 
-  /** ② 写作(recall + writedraft) */
-  async function writeDraft() {
-    if (!state.sessionId) { aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">先生成分镜序列</div>'); return; }
-    aiResult.insertAdjacentHTML("beforeend", '<div class="placeholder">正在召回参考 + 写作…(任务日志见底部)</div>');
-    const refBooks = selectedRefBooks(); // 勾选的参考书（空 = 全库跨书）
-    taskStatus.textContent = refBooks.length ? `参考源: ${refBooks.join(" + ")}` : "参考源: 全库跨书";
-    try {
-      // 先 recall(装配参考, 限定所选参考书)
-      const recallId = await startTask("recall", { session: state.sessionId, topk: 6, projects: refBooks });
-      pollTask(recallId, async (t) => {
-        if (t.status !== "success") { taskStatus.textContent = "recall 失败"; return; }
-        // 再 writedraft(写作成稿)
-        const draftId = await startTask("writedraft", { session: state.sessionId, projects: refBooks });
-        pollTask(draftId, (dt) => {
-          if (dt.status === "success") {
-            taskStatus.textContent = "✅ 成稿完成";
-            aiResult.insertAdjacentHTML("beforeend",
-              `<div class="placeholder" style="color:var(--green)">✅ 成稿已生成(见任务日志/会话目录)</div>`);
-          }
-        });
+  /* ================= 可拖拽布局：三栏宽度 + 右栏内三块高度 ================= */
+  function initSplitters() {
+    const layout = document.querySelector(".layout");
+    const layoutW = () => layout.getBoundingClientRect().width;
+    const left = $("paneLeft"), right = $("paneRight");
+    const spLeft = document.querySelector('.splitter-v[data-split="left"]');
+    const spRight = document.querySelector('.splitter-v[data-split="right"]');
+    const inputSec = $("aiInputSec"), refSec = $("aiRefSec");
+    const spH1 = document.querySelector('.splitter-h[data-split="aiInput"]');
+    const spH2 = document.querySelector('.splitter-h[data-split="aiRef"]');
+
+    // 恢复记忆尺寸
+    const savedL = Number(localStorage.getItem("nw-left-w"));
+    const savedR = Number(localStorage.getItem("nw-right-w"));
+    if (savedL > 0) left.style.width = Math.min(savedL, layoutW() * 0.6) + "px";
+    if (savedR > 0) right.style.width = Math.min(savedR, layoutW() * 0.6) + "px";
+    const savedH1 = Number(localStorage.getItem("nw-ai-input-h"));
+    const savedH2 = Number(localStorage.getItem("nw-ai-ref-h"));
+    if (savedH1 > 0) inputSec.style.height = savedH1 + "px";
+    if (savedH2 > 0) refSec.style.height = savedH2 + "px";
+
+    /** 列宽拖拽（左栏向右增宽 / 右栏向左增宽） */
+    function dragCol(spEl, target, saveKey, isLeft) {
+      spEl.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        spEl.classList.add("dragging");
+        const startX = e.clientX;
+        const startW = target.getBoundingClientRect().width;
+        const move = (ev) => {
+          const delta = ev.clientX - startX;
+          const w = Math.max(140, Math.min(startW + (isLeft ? delta : -delta), layoutW() * 0.6));
+          target.style.width = w + "px";
+        };
+        const up = () => {
+          spEl.classList.remove("dragging");
+          document.removeEventListener("mousemove", move);
+          document.removeEventListener("mouseup", up);
+          localStorage.setItem(saveKey, String(Math.round(target.getBoundingClientRect().width)));
+        };
+        document.addEventListener("mousemove", move);
+        document.addEventListener("mouseup", up);
       });
-    } catch (e) {
-      taskStatus.textContent = `写作失败: ${e.message}`;
     }
+
+    /** 行高拖拽（调整上块高度，下块自适应） */
+    function dragRow(spEl, target, saveKey) {
+      spEl.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        spEl.classList.add("dragging");
+        const startY = e.clientY;
+        const startH = target.getBoundingClientRect().height;
+        const move = (ev) => {
+          const h = Math.max(60, Math.min(startH + (ev.clientY - startY), window.innerHeight * 0.5));
+          target.style.height = h + "px";
+        };
+        const up = () => {
+          spEl.classList.remove("dragging");
+          document.removeEventListener("mousemove", move);
+          document.removeEventListener("mouseup", up);
+          localStorage.setItem(saveKey, String(Math.round(target.getBoundingClientRect().height)));
+        };
+        document.addEventListener("mousemove", move);
+        document.addEventListener("mouseup", up);
+      });
+    }
+
+    dragCol(spLeft, left, "nw-left-w", true);
+    dragCol(spRight, right, "nw-right-w", false);
+    dragRow(spH1, inputSec, "nw-ai-input-h");
+    dragRow(spH2, refSec, "nw-ai-ref-h");
   }
 
   /* ================= 主题切换 ================= */
@@ -452,11 +532,11 @@
     $("btnAddChapter").onclick = addChapter;
     $("btnNewBook").onclick = newBook;
     $("bookSelect").onchange = onBookChange;
-    // 顶栏「新建」= 清空编辑器（不落盘）；「保存」= 保存到 mybook 资产区
+    // 顶栏「清空」= 清空编辑器（不落盘）；「保存」= 保存到 mybook 资产区
     $("btnNew").onclick = () => { if (vditor) vditor.setValue(""); };
     $("btnSave").onclick = () => saveChapter(false);
-    $("btnGenerate").onclick = genShots;
-    $("btnGenShots").onclick = genShots;
+    // AI 写作（右栏：输入剧情需求 → 自动生成分镜 → 召回 → 成稿）
+    $("btnGenerate").onclick = aiWrite;
     $("taskbarToggle").onclick = () => document.getElementById("taskbar").classList.toggle("open");
     // 设置
     $("btnSettings").onclick = openSettings;
@@ -474,8 +554,6 @@
     });
     // 顶栏打开文件夹按钮(快捷打开数据根)
     $("btnOpenFolder").onclick = () => openFolder("data");
-    // 暴露给内联按钮
-    window.__writeDraft = writeDraft;
   }
 
   /* ================= 启动 ================= */
@@ -484,6 +562,7 @@
     // 主题初始化:本地记忆优先,默认浅色
     applyTheme(localStorage.getItem("nw-theme") || "light");
     initEditor();
+    initSplitters(); // 三栏可拖宽 + 右栏内三块可拖高
     loadConfig();
     loadRefPool(); // 参考书池(跨书参考源选择)
     loadBooks();   // 我的书(mybook 资产区)
