@@ -140,11 +140,31 @@ body {
 
 /* 列宽拖拽条（左|中 与 中|右 之间） */
 .splitter-v {
+  position: relative;
   flex-shrink: 0; width: 5px; cursor: col-resize;
   background: transparent; z-index: 5;
   transition: background var(--dur) var(--ease);
 }
 .splitter-v:hover, .splitter-v.dragging { background: var(--brand); opacity: 0.45; }
+
+/* 拖拽条居中标注：灰色小字（悬停/拖动时加深） */
+.splitter-label {
+  position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 10px; line-height: 1;
+  color: var(--label-tertiary);
+  background: var(--bg-module);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  opacity: 0.55;
+  pointer-events: none; /* 不拦截拖拽 */
+  z-index: 6;
+  transition: opacity var(--dur) var(--ease);
+}
+.splitter-v:hover .splitter-label, .splitter-h:hover .splitter-label,
+.splitter-v.dragging .splitter-label, .splitter-h.dragging .splitter-label { opacity: 1; }
 
 /* 左栏大纲 */
 #outlineList { padding: 10px; }
@@ -198,13 +218,15 @@ body {
   transition: border-color var(--dur) var(--ease);
 }
 #aiPrompt:focus { outline: none; border-color: var(--brand); }
-/* 右栏内行高拖拽条（输入↔参考书 / 参考书↔结果） */
+/* 右栏内行高拖拽条（输入↔参考书 / 参考书↔成稿） */
 .splitter-h {
+  position: relative;
   flex-shrink: 0; height: 5px; cursor: row-resize;
   background: transparent; z-index: 5;
   transition: background var(--dur) var(--ease);
 }
 .splitter-h:hover, .splitter-h.dragging { background: var(--brand); opacity: 0.45; }
+
 /* 参考书池(跨书参考源选择,可多选) */
 .ref-pool-title { font-size: 11px; color: var(--label-tertiary); margin-bottom: 7px; }
 .ref-pool-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 108px; overflow-y: auto; }
