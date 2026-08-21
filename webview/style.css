@@ -86,15 +86,17 @@ body {
   flex-shrink: 0; z-index: 10;
 }
 .brand { font-weight: 700; font-size: 16px; color: var(--label-primary); }
-.env-status { margin-left: 12px; font-size: 12px; color: var(--label-tertiary); }
+.env-status { font-size: 12px; color: var(--label-tertiary); }
 .env-status.ok { color: var(--green-500); }
 .env-status.warn { color: var(--amber-500); }
-.model-badge {
-  font-size: 12px; color: var(--label-secondary);
-  background: var(--bg-hover); padding: 3px 10px; border-radius: 999px;
-  margin-right: 8px;
+/* 顶栏模型选择器 */
+.model-select {
+  background: var(--bg-base); color: var(--label-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 5px 8px; font-size: 12px; font-family: inherit;
 }
-.topbar-right { display: flex; align-items: center; gap: 6px; }
+.model-select:focus { outline: none; border-color: var(--brand); }
+.topbar-right { display: flex; align-items: center; gap: 8px; }
 
 /* ===== 按钮 ===== */
 .btn {
@@ -158,9 +160,10 @@ body {
 .outline-item .ch-num { color: var(--label-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .outline-item.active .ch-num { color: var(--brand); }
 
-/* 顶栏书选择（书切换在上方） */
+/* 左栏书选择条（书选择器在章节列表上一级） */
+.book-bar { display: flex; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--border); align-items: center; }
 .book-select {
-  width: 200px; margin-left: 14px;
+  flex: 1; min-width: 0;
   background: var(--bg-base); color: var(--label-primary);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
   padding: 5px 8px; font-size: 12px; font-family: inherit;
@@ -282,6 +285,7 @@ body[data-theme="dark"] .vditor { --panel-background-color: var(--n-850) !import
   text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px;
 }
 .setting-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 12px; }
+.setting-hint { font-size: 11px; color: var(--label-tertiary); margin-top: -4px; margin-bottom: 10px; }
 .setting-row label { font-size: 13px; color: var(--label-secondary); flex-shrink: 0; }
 .setting-row .ctrl { flex: 1; min-width: 0; }
 .input, select.input, textarea.input {

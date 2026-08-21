@@ -244,7 +244,7 @@ function ensureBook(name) {
   if (!fs.existsSync(dir)) throw new NovelyError("NOT_FOUND", { context: { name, kind: "book" } });
   return dir;
 }
-/** 扫描书目录章节：第XXXX章.md → [{num,title?,updatedAt}]（按 num 排序） */
+/** 扫描书目录章节：第XXXX章.md → [{num,title?,chars,updatedAt}]（按 num 排序；chars=去空白字符数，含标点） */
 function scanChapters(dir) {
   if (!fs.existsSync(dir)) return [];
   const out = [];
@@ -252,15 +252,17 @@ function scanChapters(dir) {
     const m = f.match(/^第(\d{4})章\.md$/);
     if (!m) continue;
     const p = path.join(dir, f);
-    let title = null;
+    let title = null, chars = 0;
     try {
-      const first = fs.readFileSync(p, "utf-8").split("\n")[0] ?? "";
+      const text = fs.readFileSync(p, "utf-8");
+      const first = text.split("\n")[0] ?? "";
       const tm = first.match(/^#\s+(.+)/);
       if (tm) title = tm[1].trim();
-    } catch { /* 标题读取失败 → null */ }
+      chars = text.replace(/\s/g, "").length; // 含标点的本章总字数（去空白）
+    } catch { /* 读取失败 → null/0 */ }
     let updatedAt = null;
     try { updatedAt = fs.statSync(p).mtime.toISOString(); } catch { /* ignore */ }
-    out.push({ num: Number(m[1]), title, updatedAt });
+    out.push({ num: Number(m[1]), title, chars, updatedAt });
   }
   return out.sort((a, b) => a.num - b.num);
 }

@@ -79,7 +79,7 @@
   let saveTimer = null;
   function autoSave() {
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(() => saveChapter(true), 800);
+    saveTimer = setTimeout(() => saveChapter(true), 800); // 输入停顿立即保存（即时保护）
   }
 
   /** 保存当前章节到 mybook 资产区（静默模式不打扰 UI） */
@@ -95,6 +95,24 @@
     } catch (e) {
       if (!silent) taskStatus.textContent = `保存失败: ${e.message}`;
     }
+  }
+
+  /* 定时自动保存（设置里可调间隔，默认 5 分钟；0=关闭） */
+  let autoSaveTimer = null;
+  function applyAutoSaveSetting() {
+    clearInterval(autoSaveTimer);
+    autoSaveTimer = null;
+    const min = getAutoSaveMinutes();
+    if (min > 0) {
+      autoSaveTimer = setInterval(() => {
+        if (state.currentBook && state.currentChapter) saveChapter(true);
+      }, min * 60 * 1000);
+    }
+  }
+  /** 读取自动保存间隔（localStorage，默认 5 分钟） */
+  function getAutoSaveMinutes() {
+    const v = Number(localStorage.getItem("nw-autosave-min") ?? "5");
+    return Number.isFinite(v) && v >= 0 ? v : 5;
   }
 
   /* ================= 书（我的作品 mybook 资产区） ================= */
@@ -182,7 +200,9 @@
     for (const c of state.chapters) {
       const item = document.createElement("div");
       item.className = "outline-item" + (c.num === state.currentChapter ? " active" : "");
-      item.innerHTML = `<span>${escapeHtml(c.title || `第${c.num}章`)}</span><span class="ch-num">${pad4(c.num)}</span>`;
+      // 右侧显示本章总字数（含标点），而非章号
+      const chars = typeof c.chars === "number" ? c.chars.toLocaleString("zh-CN") : "0";
+      item.innerHTML = `<span title="第${pad4(c.num)}章">${escapeHtml(c.title || `第${c.num}章`)}</span><span class="ch-num">${chars}字</span>`;
       item.onclick = () => openChapter(c.num);
       list.appendChild(item);
     }
@@ -217,12 +237,13 @@
     }
   }
 
-  /* ================= 配置状态 ================= */
+  /* ================= 配置状态 + 模型选择器（顶栏右侧） ================= */
+  const PRESET_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-chat", "deepseek-reasoner"];
+
   async function loadConfig() {
     try {
       const cfg = await api("/api/config");
-      const m = cfg?.features?.["shot-writing"]?.chat?.model || cfg?.chat?.model || "--";
-      $("modelBadge").textContent = `模型: ${m}`;
+      // LLM 就绪状态（模型选择器左侧）
       const statusEl = $("envStatus");
       if (cfg?.chat?.apiKeySet) {
         statusEl.textContent = "LLM 就绪";
@@ -231,9 +252,37 @@
         statusEl.textContent = "⚠ LLM 未配置(无 apiKey)";
         statusEl.className = "env-status warn";
       }
+      // 模型选择器：预设 + 当前配置模型
+      const current = cfg?.features?.["shot-writing"]?.chat?.model || cfg?.chat?.model || "";
+      const sel = $("modelSelect");
+      const opts = new Set([...PRESET_MODELS, ...(current ? [current] : [])]);
+      sel.innerHTML = "";
+      for (const m of opts) {
+        const o = document.createElement("option");
+        o.value = m;
+        o.textContent = m;
+        sel.appendChild(o);
+      }
+      if (current) sel.value = current;
     } catch {
       $("envStatus").textContent = "服务未连接";
       $("envStatus").className = "env-status warn";
+      $("modelSelect").innerHTML = '<option value="">(无连接)</option>';
+    }
+  }
+
+  /** 模型切换 → 写入 config features.shot-writing.chat.model */
+  async function onModelChange() {
+    const model = $("modelSelect").value;
+    if (!model) return;
+    try {
+      await api("/api/config", {
+        method: "PUT",
+        body: JSON.stringify({ features: { "shot-writing": { chat: { model } } } }),
+      });
+      taskStatus.textContent = `✅ 写作模型: ${model}`;
+    } catch (e) {
+      taskStatus.textContent = `模型切换失败: ${e.message}`;
     }
   }
 
@@ -481,39 +530,48 @@
     $("settingsMask").classList.remove("open");
   }
 
-  /** 加载当前配置到表单(读 GET /api/config) */
+  /** 加载当前配置到表单(读 GET /api/config) + 自动保存间隔(localStorage) */
   async function loadSettingsForm() {
     try {
       const cfg = await api("/api/config");
-      $("setChatModel").value = cfg?.chat?.model || "";
-      $("setFeatModel").value = cfg?.features?.["shot-writing"]?.chat?.model || "";
-      $("setTemperature").value = cfg?.chat?.temperature ?? "";
-      const chatKey = $("chatKeyStatus"), embedKey = $("embedKeyStatus");
-      chatKey.textContent = cfg?.chat?.apiKeySet ? "✅ 已配置" : "⚠ 未配置";
-      chatKey.className = "key-status " + (cfg?.chat?.apiKeySet ? "ok" : "no");
-      embedKey.textContent = cfg?.embed?.apiKeySet ? "✅ 已配置" : "⚠ 未配置";
-      embedKey.className = "key-status " + (cfg?.embed?.apiKeySet ? "ok" : "no");
+      $("setShotModel").value = cfg?.features?.["shot-writing"]?.chat?.model || cfg?.chat?.model || "";
+      $("setShotTemp").value = cfg?.features?.["shot-writing"]?.chat?.temperature ?? cfg?.chat?.temperature ?? "";
     } catch (e) {
       taskStatus.textContent = `读取配置失败: ${e.message}`;
     }
+    // 自动保存间隔
+    const min = getAutoSaveMinutes();
+    const sel = $("setAutoSave");
+    const row = $("autoSaveCustomRow");
+    if ([0, 1, 5, 10, 30].includes(min)) {
+      sel.value = String(min);
+      row.style.display = "none";
+    } else {
+      sel.value = "custom";
+      row.style.display = "flex";
+      $("setAutoSaveCustom").value = min;
+    }
   }
 
-  /** 保存设置(PUT /api/config;模块作用域写 features) */
+  /** 保存设置(PUT /api/config 写 features.shot-writing.chat) + 自动保存间隔(localStorage) */
   async function saveSettings() {
-    const body = { features: {}, chat: {} };
-    const featModel = $("setFeatModel").value.trim();
-    const chatModel = $("setChatModel").value.trim();
-    const temp = parseFloat($("setTemperature").value);
-    if (featModel) body.features["shot-writing"] = { chat: { model: featModel } };
-    if (!isNaN(temp)) {
-      body.chat.temperature = temp;
-      body.features["shot-writing"] = body.features["shot-writing"] ?? {};
-      body.features["shot-writing"].chat = { ...(body.features["shot-writing"].chat ?? {}), temperature: temp };
+    const body = { features: {} };
+    const model = $("setShotModel").value.trim();
+    const temp = parseFloat($("setShotTemp").value);
+    if (model || !Number.isNaN(temp)) {
+      body.features["shot-writing"] = { chat: {} };
+      if (model) body.features["shot-writing"].chat.model = model;
+      if (!Number.isNaN(temp)) body.features["shot-writing"].chat.temperature = temp;
     }
-    if (chatModel) body.chat.model = chatModel;
     await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
-    taskStatus.textContent = "✅ 设置已保存";
-    loadConfig(); // 刷新顶栏模型徽标
+    // 自动保存间隔
+    const sel = $("setAutoSave");
+    let min = sel.value === "custom" ? parseInt($("setAutoSaveCustom").value, 10) : Number(sel.value);
+    if (!Number.isFinite(min) || min < 0) min = 5;
+    localStorage.setItem("nw-autosave-min", String(min));
+    applyAutoSaveSetting();
+    taskStatus.textContent = `✅ 设置已保存（自动保存 ${min > 0 ? min + " 分钟" : "关闭"}）`;
+    loadConfig(); // 刷新顶栏模型选择器
     closeSettings();
   }
 
@@ -537,6 +595,8 @@
     $("btnSave").onclick = () => saveChapter(false);
     // AI 写作（右栏：输入剧情需求 → 自动生成分镜 → 召回 → 成稿）
     $("btnGenerate").onclick = aiWrite;
+    // 顶栏模型选择器
+    $("modelSelect").onchange = onModelChange;
     $("taskbarToggle").onclick = () => document.getElementById("taskbar").classList.toggle("open");
     // 设置
     $("btnSettings").onclick = openSettings;
@@ -552,8 +612,10 @@
     document.querySelectorAll(".folder-btn").forEach((el) => {
       el.onclick = () => openFolder(el.dataset.dir);
     });
-    // 顶栏打开文件夹按钮(快捷打开数据根)
-    $("btnOpenFolder").onclick = () => openFolder("data");
+    // 自动保存设置：切到"自定义"时显示分钟输入框
+    $("setAutoSave").onchange = () => {
+      $("autoSaveCustomRow").style.display = $("setAutoSave").value === "custom" ? "flex" : "none";
+    };
   }
 
   /* ================= 启动 ================= */
@@ -566,6 +628,7 @@
     loadConfig();
     loadRefPool(); // 参考书池(跨书参考源选择)
     loadBooks();   // 我的书(mybook 资产区)
+    applyAutoSaveSetting(); // 定时自动保存（设置间隔，默认 5 分钟）
     taskStatus.textContent = "就绪";
   }
 
