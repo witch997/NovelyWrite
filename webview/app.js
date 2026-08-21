@@ -460,8 +460,8 @@
     const savedH2 = Number(localStorage.getItem("nw-ai-ref-h"));
     const panel = document.getElementById("aiPanel");
     const panelH = panel.getBoundingClientRect().height || 600;
-    if (savedH1 > 0) inputSec.style.height = Math.min(savedH1, panelH - 220) + "px";
-    if (savedH2 > 0) refSec.style.height = Math.min(savedH2, panelH - 150) + "px";
+    if (savedH1 > 0) inputSec.style.height = Math.max(110, Math.min(savedH1, panelH - 220)) + "px";
+    if (savedH2 > 0) refSec.style.height = Math.max(60, Math.min(savedH2, panelH - 150)) + "px";
 
     /** 列宽拖拽（左栏向右增宽 / 右栏向左增宽） */
     function dragCol(spEl, target, saveKey, isLeft) {
@@ -486,8 +486,8 @@
       });
     }
 
-    /** 行高拖拽（调整上块高度，下块自适应；限制在面板内，防拖穿边界） */
-    function dragRow(spEl, target, saveKey) {
+    /** 行高拖拽（调整上块高度，下块自适应；minH=最小高度，限制在面板内防拖穿） */
+    function dragRow(spEl, target, saveKey, minH) {
       spEl.addEventListener("mousedown", (e) => {
         e.preventDefault();
         spEl.classList.add("dragging");
@@ -502,7 +502,7 @@
           const splitH = panel.querySelectorAll(".splitter-h").length * 5;
           const maxH = panel.getBoundingClientRect().height - minOthers - splitH;
           h = Math.min(h, maxH);
-          target.style.height = Math.max(60, h) + "px";
+          target.style.height = Math.max(minH, h) + "px";
         };
         const up = () => {
           spEl.classList.remove("dragging");
@@ -517,8 +517,8 @@
 
     dragCol(spLeft, left, "nw-left-w", true);
     dragCol(spRight, right, "nw-right-w", false);
-    dragRow(spH1, inputSec, "nw-ai-input-h");
-    dragRow(spH2, refSec, "nw-ai-ref-h");
+    dragRow(spH1, inputSec, "nw-ai-input-h", 110); // 输入区：需容纳按钮+输入框
+    dragRow(spH2, refSec, "nw-ai-ref-h", 60);       // 参考书区：标题+可滚动列表
   }
 
   /* ================= 主题切换 ================= */
