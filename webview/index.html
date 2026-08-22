@@ -59,7 +59,7 @@
     <!-- 中右：AI 成稿 final 参考（只读，不做编辑） -->
     <div class="pane pane-draft" id="paneDraft">
       <div class="pane-header">
-        <span>AI 成稿 · final</span>
+        <span>AI 成稿</span>
         <div class="editor-actions">
           <button id="btnClearDraft" class="btn btn-sm" title="清空当前成稿内容">清空</button>
           <button id="btnInsertDraft" class="btn btn-sm btn-primary" title="将成稿插入到写作台">↪ 插入到写作栏</button>
@@ -87,19 +87,21 @@
       <div class="splitter-h" data-split="aiInput"></div>
       <div class="ai-sec" id="aiRefSec">
         <div class="ref-pool-title">
-          <span>参考书（勾选 = 只参考这些书；不勾选 = 参考全库）</span>
           <span class="ref-pool-tools">
-            <select id="refPoolSort" class="input ref-sort" title="排序方式（域优先+置顶恒生效）">
-              <option value="name">按拼音</option>
-              <option value="time-desc">按时间（新→旧）</option>
-              <option value="time-asc">按时间（旧→新）</option>
-            </select>
             <button id="btnImportBook" class="btn btn-sm" title="导入语料 txt 并建库">导入</button>
+            <input id="refPoolSearch" class="input ref-search" placeholder="🔍 筛选…" autocomplete="off">
+            <button id="btnSearchPool" class="btn btn-sm" title="按关键字筛选参考书（回车同效）">搜索</button>
           </span>
         </div>
         <input type="file" id="bookFileInput" accept=".txt" style="display:none">
         <div class="ref-pool-search">
-          <input id="refPoolSearch" class="input" placeholder="🔍 筛选参考书…" autocomplete="off">
+          <button id="btnSelectAll" class="btn btn-sm btn-primary" title="全选所有参考书">全选</button>
+          <select id="refPoolSort" class="input ref-sort" title="排序方式（域优先+置顶恒生效）">
+            <option value="name">按拼音</option>
+            <option value="time-desc">按时间（新→旧）</option>
+            <option value="time-asc">按时间（旧→新）</option>
+          </select>
+          <button id="btnDismantle" class="btn btn-sm btn-danger" title="拆书（功能规划中）">拆书</button>
         </div>
         <div id="refPoolList" class="ref-pool-list"><span class="muted">加载中…</span></div>
       </div>

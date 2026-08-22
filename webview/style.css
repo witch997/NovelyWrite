@@ -124,10 +124,10 @@ body {
   background: var(--bg-module);
 }
 .pane-center { flex: 1 1 auto; min-width: 200px; display: flex; flex-direction: row; background: var(--bg-base); }
-/* 中左：写作台（编辑器） */
-.pane-editor { flex: 1 1 auto; min-width: 0; border-right: 1px solid var(--border); }
-/* 中右：AI 成稿 final 参考（只读） */
-.pane-draft { width: 300px; flex-shrink: 0; background: var(--bg-module); }
+/* 中左：写作台（编辑器），最小 400px 保证可写 */
+.pane-editor { flex: 1 1 auto; min-width: 400px; border-right: 1px solid var(--border); }
+/* 中右：AI 成稿 final 参考（只读）；固定宽度由拖拽控制（flex-shrink 必须 0，否则 flex 会覆盖拖拽宽度） */
+.pane-draft { width: 300px; min-width: 200px; flex-shrink: 0; background: var(--bg-module); }
 .draft-wrap { background: var(--bg-module); }
 .pane-right {
   width: 350px; flex-shrink: 0;
@@ -211,23 +211,34 @@ body {
 }
 .splitter-h:hover, .splitter-h.dragging { background: var(--brand); opacity: 0.45; }
 
-/* 参考书池(跨书参考源选择,可多选)：标题+搜索+列表纵向布局，列表滚动 */
-.ref-pool-title { font-size: 11px; color: var(--label-tertiary); margin-bottom: 7px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.ref-pool-title .btn { flex-shrink: 0; }
-.ref-pool-tools { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
-.ref-sort {
+/* 参考书池(跨书参考源选择,可多选)：工具行+搜索行+列表纵向布局，列表滚动 */
+.ref-pool-title { font-size: 11px; color: var(--label-tertiary); margin-bottom: 3px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; }
+.ref-pool-title .btn { flex-shrink: 0; white-space: nowrap; height: 24px; box-sizing: border-box; padding: 0 8px; line-height: 1; display: inline-flex; align-items: center; }
+.ref-pool-tools { display: flex; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; }
+/* 搜索输入框（工具行，占可用宽；固定高度与按钮同高） */
+.ref-search {
+  flex: 1 1 auto; min-width: 40px;
+  height: 24px; box-sizing: border-box; line-height: 1;
   background: var(--bg-base); color: var(--label-primary);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 3px 6px; font-size: 11px; font-family: inherit;
+  padding: 0 6px; font-size: 12px; font-family: inherit;
 }
-.ref-sort:focus { outline: none; border-color: var(--brand); }
-.ref-pool-search { margin-bottom: 7px; flex-shrink: 0; }
-.ref-pool-search .input {
-  width: 100%; background: var(--bg-base); color: var(--label-primary);
+.ref-search:focus { outline: none; border-color: var(--brand); }
+.ref-sort {
+  flex: 1 1 auto; min-width: 120px;
+  box-sizing: border-box;
+  background: var(--bg-base); color: var(--label-primary);
   border: 1px solid var(--border); border-radius: var(--radius-sm);
-  padding: 5px 9px; font-size: 12px; font-family: inherit;
+  padding: 2px 4px; font-size: 12px; font-family: inherit;
+  appearance: auto; -webkit-appearance: auto; /* 保留原生渲染，防文字纵向裁剪 */
 }
-.ref-pool-search .input:focus { outline: none; border-color: var(--brand); }
+.ref-sort option { font-size: 12px; }
+.ref-sort:focus { outline: none; border-color: var(--brand); }
+.ref-pool-search { margin-bottom: 3px; flex-shrink: 0; display: flex; align-items: center; gap: 4px; }
+.ref-pool-search .btn { flex-shrink: 0; white-space: nowrap; height: 24px; box-sizing: border-box; padding: 0 8px; line-height: 1; display: inline-flex; align-items: center; }
+/* 拆书按钮（红色，未来拆书功能入口，暂不绑功能） */
+.btn-danger { background: #ef4444; border-color: #ef4444; color: #fff; flex-shrink: 0; }
+.btn-danger:hover { background: #dc2626; color: #fff; }
 .ref-pool-list {
   display: flex; flex-direction: column; gap: 5px;
   flex: 1 1 auto; min-height: 0; overflow-y: auto;

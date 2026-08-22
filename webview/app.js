@@ -381,6 +381,13 @@
 
   /* ================= Vditor 编辑器 ================= */
   let vditor = null;
+  /** 在光标处插入文本（Vditor insertValue，IR 模式正确保持焦点；引号/分隔符用） */
+  function insertAtCursor(prefix, suffix = "") {
+    if (!vditor) return;
+    vditor.focus();
+    vditor.insertValue(prefix + suffix);
+    autoSave();
+  }
   function initEditor() {
     vditor = new Vditor("vditor", {
       height: "100%",
@@ -389,10 +396,43 @@
       placeholder: "开始写作…(Markdown)",
       cache: { enable: false }, // 不依赖 localStorage 缓存
       toolbar: [
-        "headings", "bold", "italic", "strike", "|",
-        "list", "ordered-list", "quote", "|",
-        "link", "upload", "table", "|",
-        "undo", "redo", "|", "fullscreen",
+        "|", // 工具栏最左分隔
+        {
+          name: "font-minus",
+          icon: '<svg viewBox="0 0 1024 1024" width="16" height="16"><path fill="currentColor" d="M192 448h640v128H192z"/></svg>',
+          tip: "减小字号",
+          click: () => adjustEditorFontSize(-1),
+        },
+        {
+          name: "font-size",
+          icon: `<span class="vditor-menu-fontsize" style="font-size:13px;font-weight:600;line-height:1;white-space:nowrap;">15</span>`,
+          tip: "当前字号",
+          click: () => {},
+        },
+        {
+          name: "font-plus",
+          icon: '<svg viewBox="0 0 1024 1024" width="16" height="16"><path fill="currentColor" d="M448 192h128v640H448zM192 448h640v128H192z"/></svg>',
+          tip: "增大字号",
+          click: () => adjustEditorFontSize(1),
+        },
+        "|", // 加粗左侧分隔栏
+        "bold", "italic", "|",
+        "undo", "redo", "|",
+        {
+          name: "quote-dialog",
+          icon: '<svg viewBox="0 0 1024 1024" width="18" height="18"><path fill="currentColor" d="M448 192v768L0 512V192h448zm576 0v768L576 512V192h448z"/></svg>',
+          tip: "插入对话引号 “”",
+          hotkey: "⌘⇧Q",
+          click: () => insertAtCursor('“', '”'),
+        },
+        {
+          name: "paragraph-break",
+          icon: '<svg viewBox="0 0 1024 1024" width="18" height="18"><path fill="currentColor" d="M192 192h640v128H192V192zm0 256h640v128H192V448zm0 256h640v128H192V704z"/></svg>',
+          tip: "插入段落分隔符（场景切换）",
+          hotkey: "⌘⇧P",
+          click: () => insertAtCursor('\n\n***\n\n'),
+        },
+        "|", "fullscreen",
       ],
       counter: { enable: true, type: "text" },
       input: (val) => {
@@ -401,8 +441,37 @@
       },
       after: () => {
         $("wordCount").textContent = "0 字";
+        applyEditorFontSize(); // 初始化后应用已保存的字号
       },
     });
+  }
+
+  /* ================= 写作台字号调节 ================= */
+  const FONT_KEY = "nw-editor-fontsize";
+  const FONT_MIN = 12, FONT_MAX = 24, FONT_DEFAULT = 15;
+  /** 当前字号 */
+  function getEditorFontSize() {
+    const v = Number(localStorage.getItem(FONT_KEY) ?? FONT_DEFAULT);
+    return Number.isFinite(v) ? Math.max(FONT_MIN, Math.min(FONT_MAX, v)) : FONT_DEFAULT;
+  }
+  /** 应用字号到 Vditor 编辑区（CSS 变量，所有模式生效）+ 更新工具栏字号显示 */
+  function applyEditorFontSize() {
+    const size = getEditorFontSize();
+    const root = document.getElementById("vditor");
+    if (!root) return;
+    // Vditor 编辑区（ir 模式 .vditor-ir，sv 模式 .vditor-reset，wysiwyg .vditor-wysiwyg）
+    root.querySelectorAll(".vditor-ir, .vditor-reset, .vditor-wysiwyg").forEach((el) => {
+      el.style.fontSize = `${size}px`;
+    });
+    // 同步工具栏「A」按钮文字（font-size 自定义项）
+    const aBtn = root.querySelector(".vditor-menu-fontsize");
+    if (aBtn) aBtn.textContent = `${size}`;
+  }
+  /** 字号 ±delta（clamp 到 [12,24]），存 localStorage 并应用 */
+  function adjustEditorFontSize(delta) {
+    const next = Math.max(FONT_MIN, Math.min(FONT_MAX, getEditorFontSize() + delta));
+    localStorage.setItem(FONT_KEY, String(next));
+    applyEditorFontSize();
   }
 
   /* ================= 自动保存（server 持久化：PUT /api/books/:name/chapters/:n） ================= */
@@ -422,10 +491,17 @@
         body: JSON.stringify({ content }),
       });
       if (!silent) toast("✅ 已保存到 mybook");
-      refreshChapterList(); // 保存后刷新左侧章节表（字数/标题更新，不打断编辑器）
+      scheduleChapterRefresh(); // 保存后刷新左侧章节表（防抖合并，避免输入连发刷屏）
     } catch (e) {
       if (!silent) toast(`保存失败: ${e.message}`);
     }
+  }
+
+  let chapterRefreshTimer = null;
+  /** 防抖刷新章节列表（500ms 合并；手动保存/章节切换后立即刷） */
+  function scheduleChapterRefresh() {
+    clearTimeout(chapterRefreshTimer);
+    chapterRefreshTimer = setTimeout(() => refreshChapterList(), 500);
   }
 
   /** 轻量刷新章节列表（仅重拉列表 + 重绘大纲，保持当前章节与编辑器不动） */
@@ -436,6 +512,15 @@
       state.chapters = d.chapters || [];
       renderOutline();
     } catch { /* 刷新失败忽略 */ }
+  }
+
+  /** 切换书/章节前强制保存当前编辑器内容（防未保存内容丢失）；无当前章则跳过 */
+  async function flushSave() {
+    if (!state.currentBook || !state.currentChapter || !vditor) return;
+    clearTimeout(saveTimer); // 取消待触发的 autoSave（本处立即保存）
+    try {
+      await saveChapter(true);
+    } catch { /* 保存失败不阻塞切换 */ }
   }
 
   /* 定时自动保存（设置里可调间隔，默认 5 分钟；0=关闭） */
@@ -475,9 +560,14 @@
         opt.textContent = `${b.name}（${b.chapters}章）`;
         sel.appendChild(opt);
       }
-      // 保持当前选择（或默认第一本）
+      // 保持当前选择（或恢复上次打开的书；都没有则默认第一本）
+      let lastBook = null;
+      try { lastBook = JSON.parse(localStorage.getItem("nw-last-open") || "null")?.book ?? null; } catch { /* ignore */ }
       if (state.currentBook && state.books.some((b) => b.name === state.currentBook)) {
         sel.value = state.currentBook;
+      } else if (lastBook && state.books.some((b) => b.name === lastBook)) {
+        state.currentBook = lastBook;
+        sel.value = lastBook;
       } else {
         state.currentBook = state.books[0].name;
         sel.value = state.currentBook;
@@ -488,15 +578,23 @@
     }
   }
 
-  /** 加载某书章节列表 */
+  /** 加载某书章节列表；若该书是「上次打开的书」，自动定位到上次章节 */
   async function loadBookDetail(name) {
     state.currentBook = name;
     state.currentChapter = null;
     const d = await api(`/api/books/${encodeURIComponent(name)}`);
     state.chapters = d.chapters || [];
     renderOutline();
+    // 恢复上次打开的章节（同一本书时定位到上次章号；否则第一章）
+    let target = state.chapters[0]?.num;
+    try {
+      const last = JSON.parse(localStorage.getItem("nw-last-open") || "null");
+      if (last && last.book === name && state.chapters.some((c) => c.num === last.chapter)) {
+        target = last.chapter;
+      }
+    } catch { /* 记录损坏忽略 */ }
     if (state.chapters.length) {
-      openChapter(state.chapters[0].num);
+      openChapter(target ?? state.chapters[0].num);
     } else if (vditor) {
       vditor.setValue("");
       $("currentChapterTitle").textContent = `${name} · 未命名`;
@@ -523,6 +621,7 @@
   async function onBookChange() {
     const name = $("bookSelect").value;
     if (!name) { state.currentBook = null; renderOutline(); return; }
+    await flushSave(); // 切换书前强制保存当前章节（防未保存内容丢失）
     await loadBookDetail(name);
   }
 
@@ -563,11 +662,15 @@
     }
   }
 
-  /** 打开章节（读 mybook 内容 → 编辑器） */
+  /** 打开章节（读 mybook 内容 → 编辑器）；切换前强制保存当前章，记录「上次打开的书+章节」 */
   async function openChapter(num) {
     if (!state.currentBook) return;
+    await flushSave(); // 切换章节前保存当前编辑器内容（防未保存丢失）
     state.currentChapter = num;
     renderOutline();
+    try {
+      localStorage.setItem("nw-last-open", JSON.stringify({ book: state.currentBook, chapter: num }));
+    } catch { /* ignore */ }
     try {
       const d = await api(`/api/books/${encodeURIComponent(state.currentBook)}/chapters/${num}`);
       if (vditor) vditor.setValue(d.content || "");
@@ -736,6 +839,20 @@
   /** 收集勾选的参考书（数组；空 = 全库跨书） */
   function selectedRefBooks() {
     return [...refPool.entries()].filter(([, v]) => v.checked).map(([name]) => name);
+  }
+
+  /** 全选/全取消 切换：当前全部勾选 → 全取消；否则 → 全选（含未加载进 refPool 的） */
+  function selectAllRefPool() {
+    if (!refPoolAll.length) { toast("暂无参考书"); return; }
+    // 确保全部书都有 refPool 条目
+    for (const p of refPoolAll) {
+      if (!refPool.has(p.name)) refPool.set(p.name, { checked: false, domain: p.domain });
+    }
+    const allChecked = refPoolAll.every((p) => refPool.get(p.name)?.checked);
+    const next = !allChecked; // 全部已选 → 取消；否则 → 全选
+    for (const p of refPoolAll) refPool.get(p.name).checked = next;
+    renderRefPool();
+    toast(next ? `✅ 已全选 ${refPoolAll.length} 本参考书` : "已全部取消选择");
   }
 
   /* ================= 导入参考书（选 txt → 选建库范围 → 自动建库） ================= */
@@ -978,13 +1095,26 @@
     const inputSec = $("aiInputSec"), refSec = $("aiRefSec");
     const spH1 = document.querySelector('.splitter-h[data-split="aiInput"]');
 
-    // 恢复记忆尺寸（列宽）
+    // 恢复记忆尺寸（列宽）——受写作台最小宽度(400)约束，防覆盖
+    const EDITOR_MIN = 400, SPLITV = 5; // 写作台最小宽 / 竖分隔条宽
+    const MIN_COL = 140; // 各栏最小宽
+    const fixedOthers = (exclude) => {
+      let sum = EDITOR_MIN + SPLITV * 3; // 写作台 + 三条分隔条
+      if (exclude !== left) sum += left.getBoundingClientRect().width;
+      if (exclude !== draftPane) sum += draftPane.getBoundingClientRect().width;
+      if (exclude !== right) sum += right.getBoundingClientRect().width;
+      return sum;
+    };
+    // 该栏最大宽 = 布局 − 其他栏与写作台最小占用；写作台 min 优先（不覆盖写作台）
+    const maxLeft = () => Math.max(MIN_COL, layoutW() - fixedOthers(left));
+    const maxDraft = () => Math.max(MIN_COL, layoutW() - fixedOthers(draftPane));
+    const maxRight = () => Math.max(MIN_COL, layoutW() - fixedOthers(right));
     const savedL = Number(localStorage.getItem("nw-left-w"));
     const savedD = Number(localStorage.getItem("nw-draft-w"));
     const savedR = Number(localStorage.getItem("nw-right-w"));
-    if (savedL > 0) left.style.width = Math.min(savedL, layoutW() * 0.6) + "px";
-    if (savedD > 0) draftPane.style.width = Math.min(savedD, layoutW() * 0.6) + "px";
-    if (savedR > 0) right.style.width = Math.min(savedR, layoutW() * 0.6) + "px";
+    if (savedL > 0) left.style.width = Math.min(savedL, maxLeft()) + "px";
+    if (savedD > 0) draftPane.style.width = Math.min(savedD, maxDraft()) + "px";
+    if (savedR > 0) right.style.width = Math.min(savedR, maxRight()) + "px";
 
     /* ---------- AI 参考栏：两块 + 一条拖拽条 绝对定位统一排布 ---------- */
     let inputH = Math.max(110, Number(localStorage.getItem("nw-ai-input-h")) || 160);
@@ -1004,8 +1134,10 @@
     }
     layoutAiPanel();
 
-    /** 列宽拖拽（左栏向右增宽 / 右栏向左增宽） */
-    function dragCol(spEl, target, saveKey, isLeft) {
+    /** 列宽拖拽（左栏向右增宽 / 成稿栏 / 右栏向左增宽）
+     *  maxW：该栏最大宽度（由其他栏最小宽度约束，防覆盖写作台）
+     *  isLeft：true=向右拖增宽（左栏）；false=向左拖增宽（成稿/右栏） */
+    function dragCol(spEl, target, saveKey, isLeft, maxW) {
       spEl.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         spEl.setPointerCapture?.(e.pointerId);
@@ -1014,7 +1146,7 @@
         const startW = target.getBoundingClientRect().width;
         const move = (ev) => {
           const delta = ev.clientX - startX;
-          const w = Math.max(140, Math.min(startW + (isLeft ? delta : -delta), layoutW() * 0.6));
+          const w = Math.max(140, Math.min(startW + (isLeft ? delta : -delta), maxW()));
           target.style.width = w + "px";
         };
         const up = (ev) => {
@@ -1061,9 +1193,9 @@
       });
     }
 
-    dragCol(spLeft, left, "nw-left-w", true);
-    dragCol(spDraft, draftPane, "nw-draft-w", false); // 分隔条右拖 → 成稿栏变窄（写作台变宽），符合直觉
-    dragCol(spRight, right, "nw-right-w", false);
+    dragCol(spLeft, left, "nw-left-w", true, maxLeft);
+    dragCol(spDraft, draftPane, "nw-draft-w", false, maxDraft); // 分隔条右拖 → 成稿栏变窄（写作台变宽），符合直觉
+    dragCol(spRight, right, "nw-right-w", false, maxRight);
     dragRow(spH1, "nw-ai-input-h", 110); // 输入区：需容纳按钮+输入框（右栏仅一条拖拽条）
     window.addEventListener("resize", () => layoutAiPanel());
   }
@@ -1192,9 +1324,13 @@
     // 导入参考书
     $("btnImportBook").onclick = importBook;
     $("bookFileInput").onchange = onBookFile;
-    // 参考书搜索过滤 + 排序
-    $("refPoolSearch").oninput = renderRefPool;
+    // 参考书搜索（点击/回车才过滤）+ 排序 + 全选
+    const searchInput = $("refPoolSearch");
+    const doSearch = () => renderRefPool();
+    $("btnSearchPool").onclick = doSearch;
+    searchInput.addEventListener("keydown", (e) => { if (e.key === "Enter") doSearch(); });
     $("refPoolSort").onchange = renderRefPool;
+    $("btnSelectAll").onclick = selectAllRefPool;
     // 设置
     $("btnSettings").onclick = openSettings;
     $("btnSettingsClose").onclick = closeSettings;
