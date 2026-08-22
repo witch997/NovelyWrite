@@ -341,6 +341,29 @@
   }
   const pad4 = (n) => String(n).padStart(4, "0");
 
+  /**
+   * 统计正文字数（剥掉 Markdown 语法再计数，避免 # / * / > / 链接等被计入）
+   * @returns {number} 去空白后的正文字符数（含标点，与 server scanChapters 口径一致）
+   */
+  function countWords(val) {
+    let t = val || "";
+    // ① 代码块整段剔除（```...``` 内不算正文）
+    t = t.replace(/```[\s\S]*?```/g, "");
+    // ② 行内代码 `...` 剔除
+    t = t.replace(/`[^`]*`/g, "");
+    // ③ 图片/链接：![alt](url) / [text](url) → 保留 alt/text 文案
+    t = t.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1");
+    // ④ 标题/引用/列表/分隔线标记符剔除（保留文字内容）
+    t = t.split("\n").map((l) => l.replace(/^\s*(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/, "")).join("\n");
+    t = t.replace(/^\s*([-*_]){3,}\s*$/gm, ""); // 分隔线 --- / *** / ___
+    // ⑤ 行内粗体/斜体/删除线标记符剔除（保留文字）
+    t = t.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1")
+         .replace(/__([^_]+)__/g, "$1").replace(/_([^_]+)_/g, "$1")
+         .replace(/~~([^~]+)~~/g, "$1");
+    // ⑥ 去空白计数（与 server 一致：含标点、不含空白）
+    return t.replace(/\s/g, "").length;
+  }
+
   /* ================= 轻量提示(toast,右下角浮动) ================= */
   let toastTimer = null;
   function toast(msg) {
@@ -373,8 +396,7 @@
       ],
       counter: { enable: true, type: "text" },
       input: (val) => {
-        const len = (val || "").replace(/\s/g, "").length;
-        $("wordCount").textContent = `${len} 字`;
+        $("wordCount").textContent = `${countWords(val)} 字`;
         autoSave();
       },
       after: () => {
@@ -400,9 +422,20 @@
         body: JSON.stringify({ content }),
       });
       if (!silent) toast("✅ 已保存到 mybook");
+      refreshChapterList(); // 保存后刷新左侧章节表（字数/标题更新，不打断编辑器）
     } catch (e) {
       if (!silent) toast(`保存失败: ${e.message}`);
     }
+  }
+
+  /** 轻量刷新章节列表（仅重拉列表 + 重绘大纲，保持当前章节与编辑器不动） */
+  async function refreshChapterList() {
+    if (!state.currentBook) return;
+    try {
+      const d = await api(`/api/books/${encodeURIComponent(state.currentBook)}`);
+      state.chapters = d.chapters || [];
+      renderOutline();
+    } catch { /* 刷新失败忽略 */ }
   }
 
   /* 定时自动保存（设置里可调间隔，默认 5 分钟；0=关闭） */
@@ -819,18 +852,37 @@
     try {
       const d = await api(`/api/sessions/${state.sessionId}/final`);
       if (!d.ok) { setAiStatus(`成稿未找到: ${d.reason}`); return; }
-      aiResult.innerHTML = `
-        <div class="draft-title">
-          <span>📄 AI 成稿 · ${escapeHtml(d.file)}</span>
-          <button class="btn btn-sm btn-primary" onclick="window.__insertDraft()">↪ 插入到写作栏</button>
-        </div>
-        <div class="draft-text">${escapeHtml(d.content)}</div>`;
-      // 结果顶端默认在本栏顶端（不滚动即看到开头）
-      const sec = document.getElementById("aiResultSec");
-      if (sec) sec.scrollTop = 0;
+      renderDraft(d);
     } catch (e) {
       setAiStatus(`读取成稿失败: ${e.message}`);
     }
+  }
+
+  /** 渲染成稿到 AI 成稿区（供 showFinalDraft / loadLatestDraft 共用） */
+  function renderDraft(d) {
+    aiResult.innerHTML = `
+      <div class="draft-title">
+        <span>📄 AI 成稿 · ${escapeHtml(d.file)}</span>
+        <button class="btn btn-sm btn-primary" onclick="window.__insertDraft()">↪ 插入到写作栏</button>
+      </div>
+      <div class="draft-text">${escapeHtml(d.content)}</div>`;
+    const sec = document.getElementById("aiResultSec");
+    if (sec) sec.scrollTop = 0;
+  }
+
+  /** 加载最近一次成稿到工作台（页面刷新后自动显示最近产出；无成稿则忽略） */
+  async function loadLatestDraft() {
+    try {
+      const s = await api("/api/sessions");
+      if (!s.sessions?.length) return;
+      // 从最新会话往下找第一个有 final 的
+      for (const ss of s.sessions) {
+        try {
+          const d = await api(`/api/sessions/${encodeURIComponent(ss.id)}/final`);
+          if (d.ok) { state.sessionId = ss.id; renderDraft(d); return; }
+        } catch { /* 该会话无成稿，继续找下一个 */ }
+      }
+    } catch { /* 静默：无成稿时保持占位 */ }
   }
 
   /** 把成稿全文插入当前章节编辑器（不走剪贴板，完整保留段落/换行排版） */
@@ -1115,6 +1167,7 @@
     loadRefPool(); // 参考书池(跨书参考源选择)
     loadBooks();   // 我的书(mybook 资产区)
     taskBar.init(); // 浮动任务栏（全局任务进度/报错）
+    loadLatestDraft(); // 刷新后自动显示最近成稿（无成稿则忽略）
     applyAutoSaveSetting(); // 定时自动保存（设置间隔，默认 5 分钟）
     // WebUI 心跳：每 15s 上报存活；页面关闭后 server 60s 无心跳自动退出
     setInterval(() => {

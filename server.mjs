@@ -315,6 +315,19 @@ function ensureBook(name) {
   if (!fs.existsSync(dir)) throw new NovelyError("NOT_FOUND", { context: { name, kind: "book" } });
   return dir;
 }
+/** 正文字数统计：剥 Markdown 语法后去空白计数（与前端 countWords 口径一致；含标点、不含空白/语法符） */
+function mdWordCount(text) {
+  let t = text ?? "";
+  t = t.replace(/```[\s\S]*?```/g, ""); // 代码块剔除
+  t = t.replace(/`[^`]*`/g, ""); // 行内代码剔除
+  t = t.replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1"); // 图片/链接保留文案
+  t = t.split("\n").map((l) => l.replace(/^\s*(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/, "")).join("\n"); // 标题/引用/列表符
+  t = t.replace(/^\s*([-*_]){3,}\s*$/gm, ""); // 分隔线
+  t = t.replace(/\*\*([^*]+)\*\*/g, "$1").replace(/\*([^*]+)\*/g, "$1")
+       .replace(/__([^_]+)__/g, "$1").replace(/_([^_]+)_/g, "$1").replace(/~~([^~]+)~~/g, "$1"); // 行内样式符
+  return t.replace(/\s/g, "").length; // 含标点的本章总字数（去空白）
+}
+
 /** 扫描书目录章节：第XXXX章.md → [{num,title?,chars,updatedAt}]（按 num 排序；chars=去空白字符数，含标点） */
 function scanChapters(dir) {
   if (!fs.existsSync(dir)) return [];
@@ -329,7 +342,7 @@ function scanChapters(dir) {
       const first = text.split("\n")[0] ?? "";
       const tm = first.match(/^#\s+(.+)/);
       if (tm) title = tm[1].trim();
-      chars = text.replace(/\s/g, "").length; // 含标点的本章总字数（去空白）
+      chars = mdWordCount(text); // 剥 Markdown 语法后的正文字数
     } catch { /* 读取失败 → null/0 */ }
     let updatedAt = null;
     try { updatedAt = fs.statSync(p).mtime.toISOString(); } catch { /* ignore */ }
