@@ -396,7 +396,6 @@
       placeholder: "开始写作…(Markdown)",
       cache: { enable: false }, // 不依赖 localStorage 缓存
       toolbar: [
-        "|", // 工具栏最左分隔
         {
           name: "font-minus",
           icon: '<svg viewBox="0 0 1024 1024" width="16" height="16"><path fill="currentColor" d="M192 448h640v128H192z"/></svg>',
@@ -405,7 +404,7 @@
         },
         {
           name: "font-size",
-          icon: `<span class="vditor-menu-fontsize" style="font-size:13px;font-weight:600;line-height:1;white-space:nowrap;">15</span>`,
+          icon: `<span class="vditor-menu-fontsize" style="font-size:12px;font-weight:600;line-height:1;white-space:nowrap;">15</span>`,
           tip: "当前字号",
           click: () => {},
         },
@@ -415,7 +414,7 @@
           tip: "增大字号",
           click: () => adjustEditorFontSize(1),
         },
-        "|", // 加粗左侧分隔栏
+        "|",
         "bold", "italic", "|",
         "undo", "redo", "|",
         {
@@ -463,9 +462,9 @@
     root.querySelectorAll(".vditor-ir, .vditor-reset, .vditor-wysiwyg").forEach((el) => {
       el.style.fontSize = `${size}px`;
     });
-    // 同步工具栏「A」按钮文字（font-size 自定义项）
-    const aBtn = root.querySelector(".vditor-menu-fontsize");
-    if (aBtn) aBtn.textContent = `${size}`;
+    // 同步工具栏字号显示（.vditor-menu-fontsize 自定义项）
+    const sizeSpan = root.querySelector(".vditor-menu-fontsize");
+    if (sizeSpan) sizeSpan.textContent = `${size}`;
   }
   /** 字号 ±delta（clamp 到 [12,24]），存 localStorage 并应用 */
   function adjustEditorFontSize(delta) {
