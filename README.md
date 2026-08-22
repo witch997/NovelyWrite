@@ -12,7 +12,7 @@ AI 辅助小说写作工具链：把小说原文解析为结构化标注（卷�
 - **校验（check）/ 修复（fix）**：JSON 语法 / 契约一致性 / 章级与聚合层修复
 - **检索（retriever）**：三通道召回——label（结构）/ token（词重叠）/ vec（embedding 语义），跨书参考可勾选限定书源
 - **写作工作台（Web）**：书 / 章节管理（mybook 原稿持久化）、AI 写作全流程（分镜 → 召回 → 逐镜写作 → 整合成稿）、成稿直显 + 一键插入写作栏、参考书池、模型选择器（从 API 读可用模型）、API Key 设置、定时自动保存、可拖拽分栏、**浮动任务栏**（右下角全局轮询任务进度/报错，可拖动+记忆位置：建库章进度条、失败标红驻留、**失败/被杀任务一键智能续跑**（只补未标注/失败的章，不重标已成功章）、可停止/最小化）
-- **单文件 exe**：rollup bundle + 官方 node:sea + postject 打包，双击启动并自动打开浏览器
+- **单文件 exe**：rollup bundle + 官方 node:sea + postject 打包，双击启动并自动打开浏览器（Windows: `node build/build-sea.mjs` → `dist/NovelyWrite.exe`；macOS: `node build/build-mac.mjs` → `dist/NovelyWrite.app`）
 
 ## 架构（四层）
 
