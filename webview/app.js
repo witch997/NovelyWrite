@@ -652,28 +652,85 @@
 
   /* ================= 参考书池(跨书参考源选择,可多选) ================= */
   const refPool = new Map(); // name → {checked, domain}
+  let refPoolAll = []; // 全部参考书（搜索/排序用）
+  const PIN_KEY = "nw-refpool-pinned";
+  /** 置顶书列表（localStorage 持久化） */
+  function getPinned() {
+    try { const v = JSON.parse(localStorage.getItem(PIN_KEY) || "[]"); return Array.isArray(v) ? v : []; } catch { return []; }
+  }
+  function setPinned(arr) {
+    try { localStorage.setItem(PIN_KEY, JSON.stringify(arr)); } catch { /* ignore */ }
+  }
+  /** 项目时间戳：目录 ctime/mtime（无后端改动；项目目录可能不存在→0） */
+  function projectTime(p) {
+    // 前端拿不到目录时间，用 meta.verifiedAt / 兜底 0（排序时放最后）
+    return p.meta?.verifiedAt ? new Date(p.meta.verifiedAt).getTime() : 0;
+  }
+  /** 排序：置顶恒优先 → 域优先（【我的】在前）→ 所选维度（拼音/时间） */
+  function sortRefPool(list, mode) {
+    const pinned = new Set(getPinned());
+    const arr = [...list];
+    arr.sort((a, b) => {
+      const pa = pinned.has(a.name) ? 1 : 0, pb = pinned.has(b.name) ? 1 : 0;
+      if (pa !== pb) return pb - pa; // 置顶在前
+      const da = a.domain === "my" ? 0 : 1, db = b.domain === "my" ? 0 : 1;
+      if (da !== db) return da - db; // 【我的】域优先
+      if (mode === "time-desc" || mode === "time-asc") {
+        const ta = projectTime(a), tb = projectTime(b);
+        if (ta !== tb) return mode === "time-desc" ? tb - ta : ta - tb;
+      }
+      return a.name.localeCompare(b.name, "zh"); // 拼音兜底
+    });
+    return arr;
+  }
   async function loadRefPool() {
     try {
       const d = await api("/api/projects");
-      const list = (d.projects || []).sort((a, b) => a.name.localeCompare(b.name, "zh"));
-      const box = $("refPoolList");
-      if (!list.length) { box.innerHTML = '<span class="muted">无已建库项目(先 annotate 建库)</span>'; return; }
-      box.innerHTML = "";
-      for (const p of list) {
-        const pendN = (p.pending || []).length;
-        const label = `${p.name}（${p.domain === "my" ? "我的" : "外部"}${p.meta?.chaptersAnnotated ? ` ${p.meta.chaptersAnnotated}章` : ""}${pendN ? ` ⚠缺${pendN}章` : ""}）`;
-        refPool.set(p.name, { checked: false, domain: p.domain });
-        const item = document.createElement("label");
-        item.className = "ref-pool-item" + (pendN ? " has-pending" : "");
-        item.innerHTML = `<input type="checkbox" data-book="${escapeHtml(p.name)}"> <span>${escapeHtml(label)}</span>`;
-        item.querySelector("input").addEventListener("change", (e) => {
-          const b = refPool.get(p.name);
-          if (b) b.checked = e.target.checked;
-        });
-        box.appendChild(item);
-      }
+      refPoolAll = d.projects || [];
+      renderRefPool();
     } catch {
       $("refPoolList").innerHTML = '<span class="muted">参考书加载失败</span>';
+    }
+  }
+  /** 渲染参考书池（按搜索框关键字过滤 + 排序方式排序；勾选状态保留） */
+  function renderRefPool() {
+    const box = $("refPoolList");
+    if (!refPoolAll.length) { box.innerHTML = '<span class="muted">无已建库项目(先 annotate 建库)</span>'; return; }
+    const kw = ($("refPoolSearch")?.value ?? "").trim().toLowerCase();
+    const mode = $("refPoolSort")?.value ?? "name";
+    let list = kw ? refPoolAll.filter((p) => p.name.toLowerCase().includes(kw)) : refPoolAll;
+    list = sortRefPool(list, mode);
+    box.innerHTML = "";
+    if (!list.length) { box.innerHTML = '<span class="muted">无匹配「' + escapeHtml(kw) + '」的参考书</span>'; return; }
+    for (const p of list) {
+      const pendN = (p.pending || []).length;
+      const tag = p.domain === "my" ? "【我的】" : "【外部】";
+      const label = `${tag}${p.name}${p.meta?.chaptersAnnotated ? `（${p.meta.chaptersAnnotated}章）` : ""}${pendN ? ` ⚠缺${pendN}章` : ""}`;
+      if (!refPool.has(p.name)) refPool.set(p.name, { checked: false, domain: p.domain });
+      const pinned = getPinned().includes(p.name);
+      const item = document.createElement("label");
+      item.className = "ref-pool-item" + (pendN ? " has-pending" : "");
+      item.innerHTML = `<input type="checkbox" data-book="${escapeHtml(p.name)}"> <span>${escapeHtml(label)}</span>`;
+      // 置顶按钮（📌 固定在行尾；点击 toggle 置顶，不影响 checkbox）
+      const pinBtn = document.createElement("span");
+      pinBtn.className = "ref-pin" + (pinned ? " pinned" : "");
+      pinBtn.title = pinned ? "取消置顶" : "置顶此书";
+      pinBtn.textContent = "📌";
+      pinBtn.addEventListener("click", (e) => {
+        e.preventDefault(); e.stopPropagation();
+        const cur = getPinned();
+        const next = cur.includes(p.name) ? cur.filter((n) => n !== p.name) : [p.name, ...cur];
+        setPinned(next);
+        renderRefPool(); // 重新排序渲染
+      });
+      item.appendChild(pinBtn);
+      const cb = item.querySelector("input");
+      cb.checked = refPool.get(p.name)?.checked ?? false;
+      cb.addEventListener("change", (e) => {
+        const b = refPool.get(p.name);
+        if (b) b.checked = e.target.checked;
+      });
+      box.appendChild(item);
     }
   }
   /** 收集勾选的参考书（数组；空 = 全库跨书） */
@@ -858,16 +915,22 @@
     }
   }
 
-  /** 渲染成稿到 AI 成稿区（供 showFinalDraft / loadLatestDraft 共用） */
+  /** 渲染成稿到 AI 成稿区（供 showFinalDraft / loadLatestDraft 共用）；插入按钮固定在栏头 */
   function renderDraft(d) {
     aiResult.innerHTML = `
       <div class="draft-title">
-        <span>📄 AI 成稿 · ${escapeHtml(d.file)}</span>
-        <button class="btn btn-sm btn-primary" onclick="window.__insertDraft()">↪ 插入到写作栏</button>
+        <span>📄 ${escapeHtml(d.file)}</span>
       </div>
       <div class="draft-text">${escapeHtml(d.content)}</div>`;
-    const sec = document.getElementById("aiResultSec");
-    if (sec) sec.scrollTop = 0;
+    const wrap = document.getElementById("paneDraft");
+    if (wrap) wrap.scrollTop = 0;
+  }
+
+  /** 清空 AI 成稿栏（恢复占位，清除当前 session 引用） */
+  function clearDraft() {
+    state.sessionId = null;
+    aiResult.innerHTML = `<div class="placeholder">AI 成稿将显示在这里</div>`;
+    toast("已清空成稿栏");
   }
 
   /** 加载最近一次成稿到工作台（页面刷新后自动显示最近产出；无成稿则忽略） */
@@ -907,44 +970,37 @@
   function initSplitters() {
     const layout = document.querySelector(".layout");
     const layoutW = () => layout.getBoundingClientRect().width;
-    const left = $("paneLeft"), right = $("paneRight");
+    const left = $("paneLeft"), draftPane = $("paneDraft"), right = $("paneRight");
     const spLeft = document.querySelector('.splitter-v[data-split="left"]');
+    const spDraft = document.querySelector('.splitter-v[data-split="draft"]');
     const spRight = document.querySelector('.splitter-v[data-split="right"]');
     const panel = document.getElementById("aiPanel");
-    const inputSec = $("aiInputSec"), refSec = $("aiRefSec"), resultSec = $("aiResultSec");
+    const inputSec = $("aiInputSec"), refSec = $("aiRefSec");
     const spH1 = document.querySelector('.splitter-h[data-split="aiInput"]');
-    const spH2 = document.querySelector('.splitter-h[data-split="aiRef"]');
 
     // 恢复记忆尺寸（列宽）
     const savedL = Number(localStorage.getItem("nw-left-w"));
+    const savedD = Number(localStorage.getItem("nw-draft-w"));
     const savedR = Number(localStorage.getItem("nw-right-w"));
     if (savedL > 0) left.style.width = Math.min(savedL, layoutW() * 0.6) + "px";
+    if (savedD > 0) draftPane.style.width = Math.min(savedD, layoutW() * 0.6) + "px";
     if (savedR > 0) right.style.width = Math.min(savedR, layoutW() * 0.6) + "px";
 
-    /* ---------- AI 栏：三块 + 两条拖拽条 绝对定位统一排布 ----------
-     * 输入区/参考书区高度用 JS 变量（记忆/默认），成稿区贴底占剩余。
-     * 所有 top/height 由 layoutAiPanel 一次性计算 → 区块物理上不可能跨栏/互相覆盖。 */
+    /* ---------- AI 参考栏：两块 + 一条拖拽条 绝对定位统一排布 ---------- */
     let inputH = Math.max(110, Number(localStorage.getItem("nw-ai-input-h")) || 160);
-    let refH = Math.max(60, Number(localStorage.getItem("nw-ai-ref-h")) || 130);
     const SPLIT = 5; // 单条拖拽条高
 
     function layoutAiPanel() {
       const panelH = panel.getBoundingClientRect().height;
       if (!panelH) return;
-      const resultH = Math.max(80, panelH - inputH - refH - SPLIT * 2);
       // 输入区
       inputSec.style.top = "0px";
       inputSec.style.height = inputH + "px";
-      // 拖拽条1
+      // 拖拽条
       spH1.style.top = inputH + "px";
-      // 参考书区
+      // 参考书区（贴底占剩余）
       refSec.style.top = inputH + SPLIT + "px";
-      refSec.style.height = refH + "px";
-      // 拖拽条2
-      spH2.style.top = inputH + SPLIT + refH + "px";
-      // 成稿区（贴底）
-      resultSec.style.top = inputH + SPLIT * 2 + refH + "px";
-      resultSec.style.height = resultH + "px";
+      refSec.style.height = Math.max(60, panelH - inputH - SPLIT) + "px";
     }
     layoutAiPanel();
 
@@ -975,22 +1031,20 @@
       });
     }
 
-    /** 行高拖拽：改 JS 变量 inputH/refH（带 clamp），layoutAiPanel 重排全部区块。
+    /** 行高拖拽：改 JS 变量 inputH（带 clamp），layoutAiPanel 重排全部区块。
      *  pointer events + setPointerCapture：鼠标移出窗口不丢事件，杜绝卡死。 */
-    function dragRow(spEl, kind, saveKey, minH) {
+    function dragRow(spEl, saveKey, minH) {
       spEl.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         spEl.setPointerCapture?.(e.pointerId);
         spEl.classList.add("dragging");
         const startY = e.clientY;
-        const startH = kind === "input" ? inputH : refH;
+        const startH = inputH;
         const move = (ev) => {
           const panelH = panel.getBoundingClientRect().height;
-          const otherH = kind === "input" ? refH : inputH;
-          // 目标块上限 = 面板 − 另一块 − 成稿区最小(80) − 两条拖拽条
-          const maxH = panelH - otherH - 80 - SPLIT * 2;
-          const h = Math.max(minH, Math.min(startH + (ev.clientY - startY), maxH));
-          if (kind === "input") inputH = h; else refH = h;
+          // 目标块上限 = 面板 − 参考书区最小(60) − 一条拖拽条
+          const maxH = panelH - 60 - SPLIT;
+          inputH = Math.max(minH, Math.min(startH + (ev.clientY - startY), maxH));
           layoutAiPanel();
         };
         const up = (ev) => {
@@ -999,7 +1053,7 @@
           document.removeEventListener("pointermove", move);
           document.removeEventListener("pointerup", up);
           document.removeEventListener("pointercancel", up);
-          localStorage.setItem(saveKey, String(Math.round(kind === "input" ? inputH : refH)));
+          localStorage.setItem(saveKey, String(Math.round(inputH)));
         };
         document.addEventListener("pointermove", move);
         document.addEventListener("pointerup", up);
@@ -1008,9 +1062,9 @@
     }
 
     dragCol(spLeft, left, "nw-left-w", true);
+    dragCol(spDraft, draftPane, "nw-draft-w", false); // 分隔条右拖 → 成稿栏变窄（写作台变宽），符合直觉
     dragCol(spRight, right, "nw-right-w", false);
-    dragRow(spH1, "input", "nw-ai-input-h", 110); // 输入区：需容纳按钮+输入框
-    dragRow(spH2, "ref", "nw-ai-ref-h", 60);       // 参考书区：标题+可滚动列表
+    dragRow(spH1, "nw-ai-input-h", 110); // 输入区：需容纳按钮+输入框（右栏仅一条拖拽条）
     window.addEventListener("resize", () => layoutAiPanel());
   }
 
@@ -1131,11 +1185,16 @@
     $("btnGenerate").onclick = aiWrite;
     // 顶栏模型选择器
     $("modelSelect").onchange = onModelChange;
-    // 成稿区"插入到写作栏"
+    // 成稿区"插入到写作栏"（固定按钮在成稿栏头 + 兼容旧内嵌调用）
+    $("btnInsertDraft").onclick = insertDraftToEditor;
+    $("btnClearDraft").onclick = clearDraft;
     window.__insertDraft = insertDraftToEditor;
     // 导入参考书
     $("btnImportBook").onclick = importBook;
     $("bookFileInput").onchange = onBookFile;
+    // 参考书搜索过滤 + 排序
+    $("refPoolSearch").oninput = renderRefPool;
+    $("refPoolSort").onchange = renderRefPool;
     // 设置
     $("btnSettings").onclick = openSettings;
     $("btnSettingsClose").onclick = closeSettings;
@@ -1162,7 +1221,18 @@
     // 主题初始化:本地记忆优先,默认浅色
     applyTheme(localStorage.getItem("nw-theme") || "light");
     initEditor();
-    initSplitters(); // 三栏可拖宽 + 右栏内三块可拖高
+    initSplitters(); // 四栏可拖宽 + 右栏内两块可拖高
+    // 空数据模式（?empty=1）：只渲染布局骨架，不加载任何外部数据（用于布局验证）
+    const emptyMode = new URLSearchParams(location.search).get("empty") === "1";
+    if (emptyMode) {
+      $("envStatus").textContent = "空数据模式（未加载外部数据）";
+      $("envStatus").className = "env-status warn";
+      $("modelSelect").innerHTML = '<option value="">(空模式)</option>';
+      $("refPoolList").innerHTML = '<span class="muted">空数据模式：参考书未加载</span>';
+      $("outlineList").innerHTML = '<div class="placeholder">空数据模式：书/章节未加载</div>';
+      if (vditor) vditor.setValue("/* 空数据模式：仅布局验证 */");
+      return; // 跳过所有数据加载
+    }
     loadConfig();
     loadRefPool(); // 参考书池(跨书参考源选择)
     loadBooks();   // 我的书(mybook 资产区)

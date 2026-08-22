@@ -39,23 +39,42 @@
   </aside>
   <div class="splitter-v" data-split="left"></div>
 
-  <!-- 中栏：写作编辑器（保存/清空在此） -->
-  <section class="pane pane-center">
-    <div class="pane-header">
-      <span id="currentChapterTitle">未命名章节</span>
-      <div class="editor-actions">
-        <span class="word-count" id="wordCount">0 字</span>
-        <button id="btnNew" class="btn btn-sm" title="清空编辑器内容">清空</button>
-        <button id="btnSave" class="btn btn-sm btn-primary" title="保存到 mybook">💾 保存</button>
+  <!-- 中栏：写作台（左）+ AI 成稿 final（右，只读），可拖宽 -->
+  <section class="pane pane-center" id="paneCenter">
+    <!-- 中左：写作编辑器（保存/清空在此） -->
+    <div class="pane pane-editor" id="paneEditor">
+      <div class="pane-header">
+        <span id="currentChapterTitle">未命名章节</span>
+        <div class="editor-actions">
+          <span class="word-count" id="wordCount">0 字</span>
+          <button id="btnNew" class="btn btn-sm" title="清空编辑器内容">清空</button>
+          <button id="btnSave" class="btn btn-sm btn-primary" title="保存到 mybook">💾 保存</button>
+        </div>
+      </div>
+      <div class="pane-body editor-wrap">
+        <div id="vditor"></div>
       </div>
     </div>
-    <div class="pane-body editor-wrap">
-      <div id="vditor"></div>
+    <div class="splitter-v" data-split="draft"></div>
+    <!-- 中右：AI 成稿 final 参考（只读，不做编辑） -->
+    <div class="pane pane-draft" id="paneDraft">
+      <div class="pane-header">
+        <span>AI 成稿 · final</span>
+        <div class="editor-actions">
+          <button id="btnClearDraft" class="btn btn-sm" title="清空当前成稿内容">清空</button>
+          <button id="btnInsertDraft" class="btn btn-sm btn-primary" title="将成稿插入到写作台">↪ 插入到写作栏</button>
+        </div>
+      </div>
+      <div class="pane-body draft-wrap">
+        <div id="aiResult" class="ai-result">
+          <div class="placeholder">AI 成稿将显示在这里</div>
+        </div>
+      </div>
     </div>
   </section>
   <div class="splitter-v" data-split="right"></div>
 
-  <!-- 右栏：AI 参考（写作按钮 + 输入需求 + 参考书 + AI 成稿，内部可调高） -->
+  <!-- 右栏：AI 参考（写作按钮 + 输入需求 + 参考书，内部可调高） -->
   <aside class="pane pane-right" id="paneRight">
     <div class="pane-header">
       <span>AI 参考</span>
@@ -68,17 +87,21 @@
       <div class="splitter-h" data-split="aiInput"></div>
       <div class="ai-sec" id="aiRefSec">
         <div class="ref-pool-title">
-          <span>参考书（勾选 = 只从这些书召回；不选 = 全库跨书）</span>
-          <button id="btnImportBook" class="btn btn-sm" title="导入语料 txt 并建库">导入参考书</button>
+          <span>参考书（勾选 = 只参考这些书；不勾选 = 参考全库）</span>
+          <span class="ref-pool-tools">
+            <select id="refPoolSort" class="input ref-sort" title="排序方式（域优先+置顶恒生效）">
+              <option value="name">按拼音</option>
+              <option value="time-desc">按时间（新→旧）</option>
+              <option value="time-asc">按时间（旧→新）</option>
+            </select>
+            <button id="btnImportBook" class="btn btn-sm" title="导入语料 txt 并建库">导入</button>
+          </span>
         </div>
         <input type="file" id="bookFileInput" accept=".txt" style="display:none">
-        <div id="refPoolList" class="ref-pool-list"><span class="muted">加载中…</span></div>
-      </div>
-      <div class="splitter-h" data-split="aiRef"></div>
-      <div class="ai-sec ai-result-sec" id="aiResultSec">
-        <div id="aiResult" class="ai-result">
-          <div class="placeholder">AI 成稿将显示在这里</div>
+        <div class="ref-pool-search">
+          <input id="refPoolSearch" class="input" placeholder="🔍 筛选参考书…" autocomplete="off">
         </div>
+        <div id="refPoolList" class="ref-pool-list"><span class="muted">加载中…</span></div>
       </div>
     </div>
   </aside>

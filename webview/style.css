@@ -115,7 +115,7 @@ body {
 .btn-sm { padding: 3px 10px; font-size: 12px; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 
-/* ===== 三栏布局（可拖拽调宽） ===== */
+/* ===== 四栏布局（可拖拽调宽） ===== */
 .layout { display: flex; flex: 1; min-height: 0; }
 .pane { display: flex; flex-direction: column; min-width: 0; }
 .pane-left {
@@ -123,7 +123,12 @@ body {
   border-right: 1px solid var(--border);
   background: var(--bg-module);
 }
-.pane-center { flex: 1 1 auto; min-width: 200px; background: var(--bg-base); }
+.pane-center { flex: 1 1 auto; min-width: 200px; display: flex; flex-direction: row; background: var(--bg-base); }
+/* 中左：写作台（编辑器） */
+.pane-editor { flex: 1 1 auto; min-width: 0; border-right: 1px solid var(--border); }
+/* 中右：AI 成稿 final 参考（只读） */
+.pane-draft { width: 300px; flex-shrink: 0; background: var(--bg-module); }
+.draft-wrap { background: var(--bg-module); }
 .pane-right {
   width: 350px; flex-shrink: 0;
   border-left: 1px solid var(--border);
@@ -176,7 +181,7 @@ body {
 .editor-actions { display: flex; align-items: center; gap: 8px; }
 .word-count { font-size: 12px; color: var(--label-tertiary); font-variant-numeric: tabular-nums; margin-right: 4px; }
 
-/* 右栏 AI：三块 + 两条拖拽条全部绝对定位（JS 统一排布，物理上不可能跨栏/覆盖） */
+/* 右栏 AI：输入区 + 参考书区 + 一条拖拽条全部绝对定位（JS 统一排布，物理上不可能跨栏/覆盖） */
 #aiPanel { position: relative; overflow: hidden; }
 .ai-sec { position: absolute; left: 0; right: 0; padding: 10px 12px; border-bottom: 1px solid var(--border); }
 /* 输入区：输入框在上方占满本栏高度，AI 写作按钮在下方 */
@@ -187,9 +192,8 @@ body {
 }
 #aiInputSec #aiPrompt { flex: 1 1 auto; min-height: 0; }
 #aiInputSec #btnGenerate { flex-shrink: 0; }
-/* 成稿区：内容滚动 */
-#aiResultSec { overflow-y: auto; padding: 0; border-bottom: none; }
-#aiResult { padding: 12px; }
+/* 参考书区：标题+搜索+列表纵向排列，列表滚动 */
+#aiRefSec { display: flex; flex-direction: column; border-bottom: none; overflow: hidden; }
 #aiPrompt {
   width: 100%; resize: none;
   background: var(--bg-base); color: var(--label-primary);
@@ -207,20 +211,51 @@ body {
 }
 .splitter-h:hover, .splitter-h.dragging { background: var(--brand); opacity: 0.45; }
 
-/* 参考书池(跨书参考源选择,可多选) */
+/* 参考书池(跨书参考源选择,可多选)：标题+搜索+列表纵向布局，列表滚动 */
 .ref-pool-title { font-size: 11px; color: var(--label-tertiary); margin-bottom: 7px; display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .ref-pool-title .btn { flex-shrink: 0; }
-.ref-pool-list { display: flex; flex-wrap: wrap; gap: 6px; max-height: 108px; overflow-y: auto; }
+.ref-pool-tools { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.ref-sort {
+  background: var(--bg-base); color: var(--label-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 3px 6px; font-size: 11px; font-family: inherit;
+}
+.ref-sort:focus { outline: none; border-color: var(--brand); }
+.ref-pool-search { margin-bottom: 7px; flex-shrink: 0; }
+.ref-pool-search .input {
+  width: 100%; background: var(--bg-base); color: var(--label-primary);
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 5px 9px; font-size: 12px; font-family: inherit;
+}
+.ref-pool-search .input:focus { outline: none; border-color: var(--brand); }
+.ref-pool-list {
+  display: flex; flex-direction: column; gap: 5px;
+  flex: 1 1 auto; min-height: 0; overflow-y: auto;
+  padding-right: 2px;
+}
+.ref-pool-list::-webkit-scrollbar { width: 6px; }
+.ref-pool-list::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
 .ref-pool-item {
-  display: inline-flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; gap: 6px;
   font-size: 12px; color: var(--label-primary);
   background: var(--bg-base); border: 1px solid var(--border);
-  border-radius: 6px; padding: 3px 9px; cursor: pointer;
+  border-radius: 6px; padding: 4px 9px; cursor: pointer;
   transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .ref-pool-item:hover { border-color: var(--border-strong); }
-.ref-pool-item input { accent-color: var(--brand); cursor: pointer; }
+.ref-pool-item input { accent-color: var(--brand); cursor: pointer; flex-shrink: 0; }
+.ref-pool-item span { overflow: hidden; text-overflow: ellipsis; }
 .ref-pool-item:has(input:checked) { border-color: var(--brand); background: var(--bg-active); }
+/* 置顶按钮：行尾 📌，置顶时金色高亮 */
+.ref-pin {
+  flex-shrink: 0; margin-left: auto; cursor: pointer;
+  font-size: 12px; opacity: 0.35; padding: 0 2px;
+  transition: opacity var(--dur) var(--ease);
+  border-radius: 4px;
+}
+.ref-pin:hover { opacity: 0.9; background: var(--interactive-hover); }
+.ref-pin.pinned { opacity: 1; color: var(--amber-500); background: var(--amber-100); }
 .ref-pool-item.has-pending { border-color: var(--amber-500); color: var(--amber-500); }
 .ref-pool-item.has-pending span { color: var(--amber-500); }
 .ai-result { padding: 12px; }
