@@ -1,0 +1,58 @@
+name: build-mac
+
+# 触发：手动（Actions 页面点 Run workflow）+ 推送到 main 时
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'webview/**'
+      - 'server.mjs'
+      - 'build/**'
+      - 'novelread/**'
+      - 'retriever/**'
+      - 'shared/**'
+      - 'features/**'
+      - 'sea-main.mjs'
+      - 'cli.mjs'
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 构建 macOS App（rollup → node:sea → postject → .app）
+        run: node build/build-mac.mjs
+
+      - name: 打包为 zip（含 Gatekeeper 解除说明）
+        run: |
+          cd dist
+          zip -r NovelyWrite-mac.zip NovelyWrite.app
+          # 附一份运行说明（首次打开被拦截时如何解除）
+          cat > 运行说明.txt <<'EOF'
+          NovelyWrite macOS 版（未签名，Gatekeeper 拦截处理）：
+
+          首次双击若提示"无法打开"或"已损坏"：
+            1. 右键 NovelyWrite.app → 打开（首次授权后即可正常双击）
+            2. 或终端执行：xattr -cr /Applications/NovelyWrite.app
+
+          依赖：macOS 11+；需系统已安装 Node？—— 不需要。
+          本包为自包含单文件 App（node:sea 打包，含完整运行时），双击即用。
+          数据（config/corpus/store/mybook/output/sessions）落在 App 所在目录旁。
+          EOF
+          zip -r NovelyWrite-mac.zip 运行说明.txt
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: NovelyWrite-mac
+          path: dist/NovelyWrite-mac.zip
+          if-no-files-found: error
+          retention-days: 30
