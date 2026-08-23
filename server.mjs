@@ -56,7 +56,7 @@ import { NovelyError, report } from "./shared/errors.mjs";
 import { loadTaskLog } from "./shared/tasks.mjs";
 // 任务管理（已抽为独立模块 task/manager.mjs——生命周期/进度/重跑/stale/清理，行为零改动）
 import { startTask, listTasks, apiTaskRerun, apiTaskStale, killTask, hasRunningTask, taskFinishedAt, cleanupOnStart } from "./task/manager.mjs";
-import { scanBookFingerprints, diffFingerprints, readFingerprints, writeFingerprints } from "./task/fingerprint.mjs";
+import { scanBookFingerprints, diffFingerprints, readFingerprints } from "./task/fingerprint.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -573,14 +573,13 @@ async function apiImportBook(body) {
     }
     // 原稿变更检测：对比 mybook 当前 md 指纹 vs project-meta.sourceFingerprints
     // 原则：mybook = 唯一事实源。changed=内容变(重标)、newChs=新增(续建)、deleted=md没了(剔除)
+    // 指纹只在【标注成功后】由 host-exec 写入（语义：指纹 = 标注基于的版本，标注成功才更新）
     const projectDir = (() => { try { return projectRoot(base, DOMAIN.MY); } catch { return null; } })();
     if (projectDir) {
       const prev = readFingerprints(projectDir);
-      const { fingerprints: cur, missing } = scanBookFingerprints(base, prev);
+      const { fingerprints: cur } = scanBookFingerprints(base, prev);
       const diff = diffFingerprints(prev, cur);
       changeInfo = { changed: diff.changed, newChs: diff.newChs, deleted: diff.deleted };
-      // 无历史指纹（首次建库）→ 本次建立基线（不改动章不重标，只记指纹）
-      if (!Object.keys(prev).length) writeFingerprints(projectDir, cur);
     }
     synthCorpusFromMybook(base);
   } else {

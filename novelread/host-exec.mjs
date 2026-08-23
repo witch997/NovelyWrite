@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { deriveChapter } from "./derive-chapter.mjs";
 import { STRUCTS, SHOT_TYPES, SHOT_FUNCS, CHAPTER_FUNCS, MAINLINE_STATES } from "./enums.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir, cliArgs, runScriptArgs } from "../shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir, cliArgs, runScriptArgs, mybookDir } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 import { chapterHash, readFingerprints, writeFingerprints } from "../task/fingerprint.mjs";
 
@@ -574,9 +574,9 @@ export async function main(argv = cliArgs()) {
   const updateFingerprint = (ch) => {
     if (domain !== DOMAIN.MY) return; // 指纹仅 my 域
     const cur = readFingerprints(PROJECT_DIR);
-    // 从当前 md 重算该章 hash（最新原稿 = 标注所依据的版本）
+    // 从当前 md 重算该章 hash（最新原稿 = 标注所依据的版本；标注成功后写入）
     try {
-      const md = fs.readFileSync(path.join(storeDir, "..", "mybook", corpusName, `第${String(ch.number).padStart(4, "0")}章.md`), "utf-8");
+      const md = fs.readFileSync(path.join(mybookDir, corpusName, `第${String(ch.number).padStart(4, "0")}章.md`), "utf-8");
       cur[ch.number] = chapterHash(md);
       writeFingerprints(PROJECT_DIR, cur);
       console.log(`  [指纹] 第${ch.number}章 指纹已更新`);
@@ -613,7 +613,7 @@ export async function main(argv = cliArgs()) {
     } else {
       okCount++; // 成功章计数（批末自动聚合：至少 1 章成功才跑）
       clearPending(ch); // 成功 → 从 pending 移除
-      if (changedSet.has(ch.number)) updateFingerprint(ch); // 改动章重标成功 → 指纹更新
+      updateFingerprint(ch); // 标注成功 → 指纹更新（含首次建库基线；失败不写 → 下次仍检测为改动）
       taskLine({ stage: "sentence", done: okCount, phase: `第${ch.number}章完成（${okCount}/${todo.length}）` });
     }
   }
