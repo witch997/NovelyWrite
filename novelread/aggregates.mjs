@@ -639,11 +639,14 @@ export function finalizePart(projectDir, project) {
 
 /* ================= main ================= */
 
+/** [task] 进度协议行（模块级——main 及聚合各阶段函数共用；task/manager.mjs 统一解析，同时进日志留痕） */
+function taskLine(d) {
+  console.log(`[task] ${JSON.stringify(d)}`);
+}
+
 export async function main() {
   parseArgs(); // 惰性解析 CLI 参数（SEA 分发时 main 无参，参数来自 cliArgs 过滤后的 process.argv）
   if (!fs.existsSync(projectDir)) { console.error(`project 不存在: ${projectDir}`); process.exit(2); }
-  // [task] 进度协议行（task/manager.mjs 统一解析；同时进日志留痕）
-  const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`);
   taskLine({ stage: "aggregate", phase: "聚合层① 确定性重算" });
 
   if (flags.includes("--emit-summaries")) { emitSummaries(projectDir); process.exit(0); }

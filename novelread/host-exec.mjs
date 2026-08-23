@@ -316,11 +316,18 @@ export async function main(argv = cliArgs()) {
         if (pendingOnly) return pendingNums.includes(c.number); // --pending：只补未完成章
         return false;
       });
-  if (!todo.length) throw new Error(`没有要处理的章: ${pendingOnly ? `pending 无未完成章（可 --all 全量）` : chapters ? chapters.join(",") : fromN ? `从${fromN}章起${toN ? `到${toN}章` : ""}` : "all"}`);
-  // 本次任务待处理章数（server 端解析为进度 total；--all/--from/--chapter/--pending 通用）
-  console.log(`[host] 本次任务 ${todo.length} 章待处理（${doAll ? "全量" : pendingOnly ? "补建 pending" : chapters ? `指定 ${chapters.join(",")}` : fromN ? `从${fromN}章起${toN ? `到${toN}章` : "到末尾"}` : "未知范围"}）`);
   // [task] 进度协议行（task/manager.mjs 统一解析；同时进日志留痕）
   const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`);
+  if (!todo.length) {
+    // 无待处理章：--pending 无缺章 = 补建已完成（正常结束，非失败）；
+    // 其他模式（--chapter/--from 超范围）也按"无需处理"正常退出，避免红卡误导
+    const reason = pendingOnly ? "pending 无未完成章（已全部补齐）" : `范围内无待处理章（${chapters ? `指定 ${chapters.join(",")}` : fromN ? `从${fromN}章起${toN ? `到${toN}章` : ""}` : "all"}）`;
+    console.log(`\n✅ [host] 无需处理：${reason}`);
+    taskLine({ stage: "done", done: 0, phase: `无需处理：${reason}` });
+    process.exit(0);
+  }
+  // 本次任务待处理章数（server 端解析为进度 total；--all/--from/--chapter/--pending 通用）
+  console.log(`[host] 本次任务 ${todo.length} 章待处理（${doAll ? "全量" : pendingOnly ? "补建 pending" : chapters ? `指定 ${chapters.join(",")}` : fromN ? `从${fromN}章起${toN ? `到${toN}章` : "到末尾"}` : "未知范围"}）`);
   taskLine({ stage: "sentence", total: todo.length, done: 0, phase: "准备" });
   // 建库范围提示：全量/大批次开销大，推荐分批（每次 ≤30 章）
   if (doAll) console.log(`\n⚠ 全量建库（${todo.length} 章）——一次开销较大（LLM token），如非必要建议分批续建（每次 ≤30 章）\n`);
