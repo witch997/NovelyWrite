@@ -167,15 +167,15 @@
       if (/往返1/.test(text)) return { done: null, total: null, pct: 20 };
       return null;
     },
-    /** 从日志尾部取最近一行有效状态（错误优先） */
-    lastLogLine(log) {
+    /** 从日志尾部取最近状态行（只扫尾部 SCAN 行——历史错误行不霸屏，恢复后立即显示新进度） */
+    lastLogLine(log, scan = 8) {
       if (!log?.length) return { text: "", kind: "" };
-      const lines = [...log].reverse();
-      const err = lines.find((l) => /失败|✗|❌|error|Error|异常|拒绝/i.test(l));
+      const tail = log.slice(-scan).reverse();
+      const err = tail.find((l) => /失败|✗|❌|error|Error|异常|拒绝/i.test(l));
       if (err) return { text: err.slice(0, 120), kind: "error" };
-      const warn = lines.find((l) => /⚠|缺|熔断|pending/i.test(l));
+      const warn = tail.find((l) => /⚠|缺|熔断|pending/i.test(l));
       if (warn) return { text: warn.slice(0, 120), kind: "warn" };
-      return { text: lines[0].slice(0, 120), kind: "" };
+      return { text: log[log.length - 1].slice(0, 120), kind: "" };
     },
     /** 一轮全局轮询 */
     async poll() {
@@ -256,12 +256,15 @@
           if (prog?.pct != null) pct = prog.pct;
         }
         if (pct != null) card.barEl.style.width = `${Math.min(pct, 99)}%`;
-        // 状态文字：错误行优先；其次 progress.stage（日志截断后仍可显示当前阶段）；再回退日志尾行
+        // 状态文字：运行中优先显示 server 实时进度（stage · 已完成章/总章），
+        // 最近日志有错误/警告时附加 ⚠ 提示（历史错误行不覆盖实时状态）
         const line = this.lastLogLine(log);
         let text = line.text, kind = line.kind;
-        if (!/error/i.test(kind) && pr?.stage) {
+        if (pr?.stage) {
           text = pr.stage;
-          kind = "";
+          if (pr.total) text += ` · ${pr.done ?? 0}/${pr.total} 章`;
+          if (line.kind) text += ` ⚠ ${line.text.slice(0, 36)}`; // 附最近错误/警告摘要
+          kind = line.kind === "error" ? "error" : "warn";
         }
         if (text) {
           card.logEl.textContent = text;
