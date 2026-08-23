@@ -123,16 +123,39 @@
       const clean = arg.replace(/^《|》$/g, "");
       return `${base}《${clean}》`;
     },
-    /** 从日志提取进度: annotate → 完成章/总数；聚合/AI → 阶段百分比 */
-    progressFrom(log) {
+    /** 从日志提取进度: annotate → 完成章/总数；聚合/AI → 阶段百分比
+     *  taskArgs: 任务参数（用于算本次范围 todo 章数做分母，而非语料总章数） */
+    progressFrom(log, taskArgs = []) {
       if (!log?.length) return null;
       const text = log.join("\n");
-      // annotate: 共 N 章 + 第X章完成
-      const totalM = text.match(/共\s*(\d+)\s*章/);
+      // annotate: 第X章完成；分母 = 本次任务范围 todo 章数（--from/--to/--all/--chapter）
       const doneM = [...text.matchAll(/第(\d+)章完成/g)].map((m) => Number(m[1]));
-      if (totalM && doneM.length) {
-        const total = Number(totalM[1]);
-        return { done: Math.max(...doneM), total, pct: Math.round((doneM.length / total) * 100) };
+      if (doneM.length) {
+        const argVal = (n) => { const a = taskArgs.find((x) => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : null; };
+        let total = null;
+        let inRange = null; // 范围内完成章数（避免日志累积了其他任务的完成记录）
+        if (taskArgs.includes("--all")) {
+          const totalM = text.match(/共\s*(\d+)\s*章/);
+          if (totalM) total = Number(totalM[1]);
+          inRange = doneM.length;
+        } else if (argVal("from")) {
+          const from = Number(argVal("from"));
+          const to = argVal("to") ? Number(argVal("to")) : null;
+          const totalM = text.match(/共\s*(\d+)\s*章/);
+          const corpusTotal = totalM ? Number(totalM[1]) : null;
+          if (corpusTotal) total = to ? (to - from + 1) : (corpusTotal - from + 1);
+          inRange = doneM.filter((n) => n >= from && (!to || n <= to)).length;
+        } else if (argVal("chapter")) {
+          const chs = String(argVal("chapter")).split(",").map(Number).filter(Boolean);
+          total = chs.length;
+          inRange = doneM.filter((n) => chs.includes(n)).length;
+        } else if (taskArgs.includes("--pending")) {
+          total = doneM.length || null;
+          inRange = doneM.length;
+        }
+        if (total && inRange != null) {
+          return { done: Math.max(...doneM), total, pct: Math.round((inRange / total) * 100) };
+        }
       }
       // annotate: 熔断/全部完成 → 100%
       if (/全部完成|已开始建库/.test(text)) return { done: null, total: null, pct: 99 };
@@ -214,18 +237,35 @@
       this.cards.set(t.id, { el, name: this.labelOf(t), status: "running", logEl: el.querySelector(".task-card-log"), barEl: el.querySelector(".task-card-bar-fill"), failed: false });
       this.el.classList.add("visible");
     },
-    /** 更新运行中卡片（进度条 + 日志行） */
+    /** 更新运行中卡片（进度条 + 日志行）；进度优先读 server 的 progress 状态字段（不依赖日志截断） */
     async updateRunning(t) {
       const card = this.cards.get(t.id);
       if (!card || card.status !== "running") return;
       try {
-        const { log } = await api(`/api/tasks/${t.id}/log`);
-        const prog = this.progressFrom(log);
-        if (prog?.pct != null) card.barEl.style.width = `${Math.min(prog.pct, 99)}%`;
+        const [detail, { log }] = await Promise.all([
+          api(`/api/tasks/${t.id}`).catch(() => null),
+          api(`/api/tasks/${t.id}/log`).catch(() => ({ log: [] })),
+        ]);
+        // 进度：server 状态字段（done/total/stage）优先；旧任务无 progress 字段时回退日志解析
+        let pct = null;
+        const pr = detail?.progress;
+        if (pr && pr.total) {
+          pct = Math.round(((pr.done ?? 0) / pr.total) * 100);
+        } else {
+          const prog = this.progressFrom(log, detail?.args ?? []);
+          if (prog?.pct != null) pct = prog.pct;
+        }
+        if (pct != null) card.barEl.style.width = `${Math.min(pct, 99)}%`;
+        // 状态文字：错误行优先；其次 progress.stage（日志截断后仍可显示当前阶段）；再回退日志尾行
         const line = this.lastLogLine(log);
-        if (line.text) {
-          card.logEl.textContent = line.text;
-          card.logEl.className = "task-card-log" + (line.kind ? ` ${line.kind}` : "");
+        let text = line.text, kind = line.kind;
+        if (!/error/i.test(kind) && pr?.stage) {
+          text = pr.stage;
+          kind = "";
+        }
+        if (text) {
+          card.logEl.textContent = text;
+          card.logEl.className = "task-card-log" + (kind ? ` ${kind}` : "");
         }
       } catch { /* 日志拉取失败忽略 */ }
     },

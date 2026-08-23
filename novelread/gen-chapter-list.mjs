@@ -20,25 +20,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { corpusDir, cliArgs } from "../shared/paths.mjs";
 
-/** 中文数字 → 阿拉伯（第一章→1；支持 一~千，零/两 兼容） */
-function cnToNum(s) {
-  if (!s) return null;
-  const D = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10, 百: 100, 千: 1000 };
-  let total = 0, section = 0, cur = 0;
-  for (const ch of s) {
-    const v = D[ch];
-    if (v === undefined) return null;
-    if (v === 10 || v === 100 || v === 1000) {
-      section += (cur || 1) * v;
-      cur = 0;
-    } else {
-      cur = v;
-    }
-  }
-  total = section + cur;
-  return total > 0 ? total : null;
-}
-
 export function main(argv = cliArgs()) {
   const corpusName = argv[0];
   const dryRun = argv.includes("--dry-run");
@@ -57,36 +38,36 @@ export function main(argv = cliArgs()) {
   const text = fs.readFileSync(corpusPath, "utf-8").replace(/\r\n/g, "\n");
   const lines = text.split("\n");
 
-  // 标题行两种格式（正文行通常缩进，标题行顶格，靠行首锚定防误匹配）：
+  // 标题行五种格式（正文行通常缩进，标题行顶格，靠行首锚定防误匹配）：
   //   ① 第X章 标题（中文数字，如 第一章 甄士隐…）
-  //   ② N、标题（阿拉伯数字，如 1、庙会）
+  //   ② N、标题 / N.标题（阿拉伯数字 + 顿号/点号，如 1、庙会 / 1.楔子）
+  //   ③ 第N章 标题（阿拉伯数字，如 第1章 楔子…）
+  //   ④ 中文数字+顿号（如 一、楔子）
+  // 章号统一按【出现顺序】编号（第 k 个标题 → 章号 k）——避免多卷重号/格式混排导致
+  // 的章号冲突；原文章号信息保留在标题列，可通过标题检索定位。
   const TITLE_RE_CN = /^第([一二三四五六七八九十百零〇两]+)章\s+(.+)$/;
-  const TITLE_RE_AR = /^(\d+)、(.*)$/;
+  const TITLE_RE_AR = /^(\d+)[、．.]\s*(.*)$/; // 阿拉伯 + 顿号/全角点/半角点
+  const TITLE_RE_AR_CN = /^第(\d+)章\s+(.+)$/;
+  const TITLE_RE_CN_DUN = /^([一二三四五六七八九十百零〇两]+)[、．.]\s*(.*)$/; // 中文数字 + 顿号/点
   const heads = [];
   lines.forEach((l, i) => {
     const m1 = l.match(TITLE_RE_CN);
-    if (m1) { heads.push({ idx: i, num: cnToNum(m1[1]), title: m1[2].trim() }); return; }
+    if (m1) { heads.push({ idx: i, title: m1[2].trim() }); return; }
     const m2 = l.match(TITLE_RE_AR);
-    if (m2) { heads.push({ idx: i, num: Number(m2[1]), title: m2[2].trim() || `第${Number(m2[1])}章` }); }
+    if (m2) { heads.push({ idx: i, title: m2[2].trim() || `第${Number(m2[1])}章` }); return; }
+    const m3 = l.match(TITLE_RE_AR_CN);
+    if (m3) { heads.push({ idx: i, title: m3[2].trim() }); return; }
+    const m4 = l.match(TITLE_RE_CN_DUN);
+    if (m4) { heads.push({ idx: i, title: m4[2].trim() }); }
   });
 
   if (!heads.length) {
-    console.error(`[gen-list] 未识别到任何章节标题（${corpusName}）。支持格式：①「第X章 标题」②「N、标题」；请检查语料格式`);
+    console.error(`[gen-list] 未识别到任何章节标题（${corpusName}）。\n支持的语料章节分章格式（标题行须顶格）：\n  ① 第X章 标题　如「第一章 楔子」\n  ② N、标题　如「1、庙会」\n  ③ N.标题　如「1.楔子」（半角/全角点均可）\n  ④ 第N章 标题　如「第1章 楔子」\n  ⑤ 一、标题　如「一、楔子」\n请检查语料格式（正文行通常缩进，标题行顶格）`);
     process.exit(1);
   }
-  // 章号归一：中文数字 → 阿拉伯；识别不出（如重复/非数字）按出现顺序兜底，防 CSV 章号冲突
-  let fallback = 0;
-  const seen = new Set();
-  for (const h of heads) {
-    if (!Number.isInteger(h.num) || h.num <= 0 || seen.has(h.num)) {
-      fallback++;
-      while (seen.has(fallback)) fallback++;
-      h.num = fallback;
-      console.warn(`  [gen-list] 章号归一: 第${h.idx + 1}行 标题「${h.title.slice(0, 20)}」→ 章号 ${h.num}（原编号异常或重复）`);
-    }
-    seen.add(h.num);
-  }
-  console.log(`[gen-list] ${corpusName}: 识别 ${heads.length} 章标题（两种格式：第X章 / N、标题）`);
+  // 章号 = 出现顺序（第 k 个标题 → k），天然唯一，无需归一
+  heads.forEach((h, k) => { h.num = k + 1; });
+  console.log(`[gen-list] ${corpusName}: 识别 ${heads.length} 章标题（五种格式：第X章 / N、N. / 第N章 / 一、），章号按出现顺序 1-${heads.length}`);
 
   const rows = [];
   for (let k = 0; k < heads.length; k++) {
@@ -95,6 +76,17 @@ export function main(argv = cliArgs()) {
     const end = k + 1 < heads.length ? heads[k + 1].idx : lines.length; // 到下一标题行前一行
     const body = lines.slice(start, end).join("\n");
     rows.push({ num: h.num, title: h.title, start, end, chars: body.length });
+  }
+
+  // 空章节检测：正文完全为空（标题紧邻标题，可能爬虫重复标题）→ 拒绝导入
+  const empties = rows.filter((r) => r.chars === 0);
+  if (empties.length) {
+    console.error(`[gen-list] 检测到 ${empties.length} 个空章节（正文为空，通常为标题重复/爬虫残留），拒绝导入：`);
+    for (const e of empties) {
+      console.error(`  · 第${e.num}章「${e.title}」（语料行 ${e.start}-${e.end}）`);
+    }
+    console.error(`支持的语料章节分章格式（标题行须顶格）：\n  ① 第X章 标题　如「第一章 楔子」\n  ② N、标题　如「1、庙会」\n  ③ N.标题　如「1.楔子」（半角/全角点均可）\n  ④ 第N章 标题　如「第1章 楔子」\n  ⑤ 一、标题　如「一、楔子」\n请清理原文件中重复/空的标题行后重试。`);
+    process.exit(1);
   }
 
   let csv = "章号,标题,语料起始行,语料结束行,字符数\n";

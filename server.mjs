@@ -99,13 +99,59 @@ function startTask(script, targs, label) {
     ? spawn(cmd, cmdArgs, { cwd, env: cmdEnv })
     : spawn(NODE, [path.join(CODE_ROOT, script), ...targs], { cwd: CODE_ROOT, env: process.env });
   // 日志流 → 独立 log 文件夹（store/_tasks/log/<id>.log，appendTaskLog 内部截断 LOG_KEEP 行）
+  // 同时实时解析进度（annotate: 第X章完成/共N章/阶段行）→ 维护 t.progress（内存+持久化，不依赖日志截断）
   let buf = "";
+  const parseProgress = (line) => {
+    if (script !== "novelread/host-exec.mjs") return;
+    const p = t.progress ?? {};
+    // 范围/总数：优先子进程权威行"本次任务 N 章待处理"（--all/--from/--chapter/--pending 通用）；缺失时按 args 推断兜底
+    const todoM = line.match(/本次任务\s*(\d+)\s*章待处理/);
+    if (todoM) {
+      p.total = Number(todoM[1]);
+    } else {
+      // 范围/总数：--from/--to 或 --all
+      const argVal = (n) => { const a = targs.find((x) => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : null; };
+      if (argVal("from")) {
+        const from = Number(argVal("from"));
+        const to = argVal("to") ? Number(argVal("to")) : null;
+        const totalM = line.match(/共\s*(\d+)\s*章/);
+        if (totalM) p.total = to ? (to - from + 1) : (Number(totalM[1]) - from + 1);
+      } else if (targs.includes("--all")) {
+        const totalM = line.match(/共\s*(\d+)\s*章/);
+        if (totalM) p.total = Number(totalM[1]);
+      } else if (argVal("chapter")) {
+        p.total = String(argVal("chapter")).split(",").filter(Boolean).length;
+      }
+    }
+    // 完成章 / 阶段（done = 本次任务范围内已完成章数；"第X章完成"每章至多输出一次 → 计数即完成数）
+    const doneM = line.match(/第(\d+)章完成/);
+    if (doneM) {
+      p.currentChapter = Number(doneM[1]);
+      p.done = (p.done ?? 0) + 1;
+    } else if (line.includes("往返1")) {
+      p.stage = "往返1:句子";
+    } else if (line.includes("往返2")) {
+      p.stage = "往返2:分镜+章节";
+    } else if (line.includes("批末自动补跑增量聚合") || line.includes("触发向量增量构建")) {
+      p.stage = "批末派生";
+    } else if (line.includes("全部完成")) {
+      p.stage = "完成";
+    }
+    // 有进度信息才写（防高频无意义写盘）
+    if (p.total || p.done || p.stage) {
+      t.progress = p;
+      persistTask(t);
+    }
+  };
   const push = (chunk) => {
     buf += chunk;
     const lines = buf.split("\n");
     buf = lines.pop() ?? "";
     const clean = lines.filter((l) => l.trim());
-    if (clean.length) appendTaskLog(id, clean);
+    if (clean.length) {
+      appendTaskLog(id, clean);
+      for (const l of clean) parseProgress(l);
+    }
   };
   child.stdout.on("data", push);
   child.stderr.on("data", push);
@@ -757,8 +803,8 @@ const ROUTES = [
   { m: "POST", p: /^\/api\/system\/heartbeat$/, h: () => apiHeartbeat() },
   { m: "GET", p: /^\/api\/sessions$/, h: () => apiSessions() },
   { m: "GET", p: /^\/api\/sessions\/([^/]+)$/, h: (m) => apiSessionDetail(decodeURIComponent(m[1])) },
-  { m: "GET", p: /^\/api\/tasks$/, h: () => ({ tasks: listTasks().map((t) => ({ id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code })) }) },
-  { m: "GET", p: /^\/api\/tasks\/([^/]+)$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, args: t.args }; } },
+  { m: "GET", p: /^\/api\/tasks$/, h: () => ({ tasks: listTasks().map((t) => ({ id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, progress: t.progress ?? null })) }) },
+  { m: "GET", p: /^\/api\/tasks\/([^/]+)$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, args: t.args, progress: t.progress ?? null }; } },
   { m: "GET", p: /^\/api\/tasks\/([^/]+)\/log$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, status: t.status, log: loadTaskLog(t.id) }; } },
   { m: "POST", p: /^\/api\/tasks\/([^/]+)\/kill$/, h: (m) => {
     // 内存任务（真子进程）；磁盘遗留 running 任务（服务器重启后僵尸态）也一并标记 killed
@@ -786,7 +832,7 @@ function taskArgsFor(kind, b) {
       if (!b?.project) throw new NovelyError("ARG_REQUIRED", { context: { field: "project" } });
       a.push(`--corpus=${b.project}`, `--domain=${b.domain ?? DOMAIN.EX}`);
       if (b.all) a.push("--all");
-      else if (b.chapter) a.push(...String(b.chapter).split(",").map((n) => `--chapter=${n.trim()}`));
+      else if (b.chapter) a.push(`--chapter=${String(b.chapter).trim()}`); // 逗号列表单参数（host-exec 内部分 split）
       else if (b.pending) a.push("--pending"); // 补建指令：只补 pending 缺章
       else if (b.from) {
         a.push(`--from=${Number(b.from)}`); // 从第 N 章起

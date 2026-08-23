@@ -24,6 +24,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { checkJsonText } from "./verify-json.mjs";
+import { SHOT_TYPES as SHOT_TYPES_ARR, SHOT_FUNCS as SHOT_FUNCS_ARR, CHAPTER_FUNCS as CHAPTER_FUNCS_ARR, MAINLINE_STATES as MAINLINE_STATES_ARR } from "./enums.mjs";
 import { projectRoot, cliArgs, runScriptArgs } from "../shared/paths.mjs";
 
 let args, project, chapterArg, doAll, contract, projectDir = null; // 惰性初始化（被 import 时不可有副作用）
@@ -171,10 +172,10 @@ function readJson(rel) {
   return JSON.parse(text);
 }
 
-const SHOT_TYPES = new Set(["信息", "对话", "心理", "动作", "事件", "环境"]);
-const SHOT_FUNCS = new Set(["塑造人物", "引入世界观", "设置动机", "推进", "铺垫", "反转", "爆发", "转场", "收束分镜", "悬念"]);
-const CHAPTER_FUNCS = new Set(["开端", "推进", "铺垫", "爆发", "转折", "收束章节", "过渡"]);
-const MAINLINE_STATES = new Set(["主线启动", "推进", "受阻", "达成", "更换"]);
+const SHOT_TYPES = new Set(SHOT_TYPES_ARR);
+const SHOT_FUNCS = new Set(SHOT_FUNCS_ARR);
+const CHAPTER_FUNCS = new Set(CHAPTER_FUNCS_ARR);
+const MAINLINE_STATES = new Set(MAINLINE_STATES_ARR);
 
 console.log(`\n========== 章级检测：${project} 第${chStr}章（契约检查${contract ? "开" : "关"}） ==========`);
 

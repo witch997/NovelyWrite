@@ -63,6 +63,7 @@ export function persistTask(t) {
       finishedAt: t.finishedAt,
       code: t.code,
       error: t.error ?? null,
+      progress: t.progress ?? null, // 实时进度（done/total/stage/currentChapter，覆盖写不累积）
       logFile: `log/${t.id}.log`, // 日志位置引用（独立 log 文件夹）
     };
     const tmp = `${taskPath(t.id)}.tmp`;

@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { checkJsonText } from "./verify-json.mjs";
 import { deriveChapter } from "./derive-chapter.mjs";
+import { STRUCTS, SHOT_TYPES, SHOT_FUNCS, CHAPTER_FUNCS, MAINLINE_STATES, TARGET_STATES } from "./enums.mjs";
 import { projectRoot, cliArgs, runScriptArgs } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
@@ -51,13 +52,6 @@ function parseArgs() {
   baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
 }
 
-/* ---------- 枚举（对齐 specs 契约） ---------- */
-const SHOT_TYPES = ["信息", "对话", "心理", "动作", "事件", "环境"];
-const SHOT_FUNCS = ["塑造人物", "引入世界观", "设置动机", "推进", "铺垫", "反转", "爆发", "转场", "收束分镜", "悬念"];
-const CHAPTER_FUNCS = ["开端", "推进", "铺垫", "爆发", "转折", "收束章节", "过渡"];
-const MAINLINE_STATES = ["主线启动", "推进", "受阻", "达成", "更换"];
-const STRUCTS = ["短句", "句从"];
-
 /* ---------- 形态 1 问题检测 ---------- */
 const issues = []; // {file, loc, problem, current, context}
 
@@ -79,7 +73,6 @@ export async function main() {
 const aggIssues = [];
 if (aggregatesMode) {
   const pushA = (file, loc, problem, current) => aggIssues.push({ file, loc, problem, current, context: "" });
-  const TARGET_STATES = ["确立", "推进", "达成", "搁置", "失败"];
   const ev = readJson("大事件/event.json");
   if (ev) {
     (ev.lifecycle ?? []).forEach((lc, i) => {

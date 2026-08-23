@@ -23,6 +23,7 @@ import { buildVectors } from "../retriever/build-derived.mjs";
 import { checkJsonText } from "./verify-json.mjs";
 import { execFileSync } from "node:child_process";
 import { deriveChapter } from "./derive-chapter.mjs";
+import { STRUCTS, SHOT_TYPES, SHOT_FUNCS, CHAPTER_FUNCS, MAINLINE_STATES } from "./enums.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
 import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir, cliArgs, runScriptArgs } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
@@ -210,12 +211,6 @@ function parsePayload(raw) {
 
 /* ================= 硬闸门校验（内联轻量，对齐 SKILL 契约） ================= */
 
-const STRUCTS = ["短句", "句从"];
-const SHOT_TYPES = ["信息", "对话", "心理", "动作", "事件", "环境"];
-const SHOT_FUNCS = ["塑造人物", "引入世界观", "设置动机", "推进", "铺垫", "反转", "爆发", "转场", "收束分镜", "悬念"];
-const CHAPTER_FUNCS = ["开端", "推进", "铺垫", "爆发", "转折", "收束章节", "过渡"];
-const MAINLINE_STATES = ["主线启动", "推进", "受阻", "达成", "更换"];
-
 /** 硬闸门 A：句子层校验（S#连续/struct枚举/text非空） */
 function gateSentences(sentJson) {
   const issues = [];
@@ -322,6 +317,8 @@ export async function main(argv = cliArgs()) {
         return false;
       });
   if (!todo.length) throw new Error(`没有要处理的章: ${pendingOnly ? `pending 无未完成章（可 --all 全量）` : chapters ? chapters.join(",") : fromN ? `从${fromN}章起${toN ? `到${toN}章` : ""}` : "all"}`);
+  // 本次任务待处理章数（server 端解析为进度 total；--all/--from/--chapter/--pending 通用）
+  console.log(`[host] 本次任务 ${todo.length} 章待处理（${doAll ? "全量" : pendingOnly ? "补建 pending" : chapters ? `指定 ${chapters.join(",")}` : fromN ? `从${fromN}章起${toN ? `到${toN}章` : "到末尾"}` : "未知范围"}）`);
   // 建库范围提示：全量/大批次开销大，推荐分批（每次 ≤30 章）
   if (doAll) console.log(`\n⚠ 全量建库（${todo.length} 章）——一次开销较大（LLM token），如非必要建议分批续建（每次 ≤30 章）\n`);
   else if (todo.length > 30) console.log(`\n⚠ 本次建库 ${todo.length} 章，超过推荐单批上限（30 章）——建议分批以控制开销\n`);

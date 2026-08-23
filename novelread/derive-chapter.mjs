@@ -93,7 +93,8 @@ export function deriveChapter(projectDir, ch) {
       shotTypeDist[sh.type] = (shotTypeDist[sh.type] ?? 0) + 1;
       for (const f of sh.funcs ?? []) funcDist[f] = (funcDist[f] ?? 0) + 1;
     }
-    const short = sents.filter((s) => (s.text ?? "").replace(/\s/g, "").length <= 12).length;
+    // 短句 = LLM 标注的 struct=「短句」（与标注口径一致，不按字符数机械判定）
+    const short = sents.filter((s) => s.struct === "短句").length;
     const cluster = sents.filter((s) => s.struct === "句从").length;
     const stats = {
       sentenceCount: sents.length,
