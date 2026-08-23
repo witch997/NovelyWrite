@@ -36,7 +36,7 @@ import { loadChatConfig } from "../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-let args, project, flags, projectDir, corpusList, listPath, stateDir, changedChs = []; // 惰性初始化（被 import 时不可有副作用）
+let args, project, flags, projectDir, corpusList, listPath, stateDir, changedChs = [], deletedChs = []; // 惰性初始化（被 import 时不可有副作用）
 
 /** 解析 CLI 参数（延迟到 main 调用——被 sea-main import 时无参数，不能执行 projectRoot） */
 function parseArgs() {
@@ -48,6 +48,11 @@ function parseArgs() {
   changedChs = (() => {
     const a = flags.find((x) => x.startsWith("--changed="));
     return a ? a.slice("--changed=".length).split(",").map(Number).filter(Boolean) : [];
+  })();
+  // --deleted=5：删除章（md 没了 → 机械剔除章号，标注已由 host-exec 归档）
+  deletedChs = (() => {
+    const a = flags.find((x) => x.startsWith("--deleted="));
+    return a ? a.slice("--deleted=".length).split(",").map(Number).filter(Boolean) : [];
   })();
   projectDir = projectRoot(project); // 域感知：两域自动探测
   corpusList = path.join(corpusDir, `${project}-章节清单.csv`);
@@ -719,6 +724,9 @@ export async function main() {
   if (!fs.existsSync(projectDir)) { console.error(`project 不存在: ${projectDir}`); process.exit(2); }
   taskLine({ stage: "aggregate", phase: "聚合层① 确定性重算" });
 
+  // 删除/改动章剔除优先（不依赖 summaries——deleted 场景可能全书标注为空，剔除照常执行）
+  if (changedChs.length || deletedChs.length) retireChangedChs([...changedChs, ...deletedChs]);
+
   if (flags.includes("--emit-summaries")) { emitSummaries(projectDir); process.exit(0); }
   if (flags.includes("--deterministic-only")) { deterministicPart(projectDir, project); process.exit(0); }
   if (flags.includes("--finalize-only")) {
@@ -735,10 +743,9 @@ export async function main() {
     console.log("\n（--skip-llm：跳过语义调用①②，event.json/volume.json 保持现状）");
   } else if (!flags.includes("--full") && readAggregatedChapters() !== null) {
     /* ============ 增量模式（默认）：只处理新增章，存量条目零扰动 ============ */
-    // 改动章（--changed）：先机械剔除旧引用（防幽灵实体），再当"新章"走增量 merge
-    if (changedChs.length) retireChangedChs(changedChs);
+    // 改动/删除章剔除已在 main 开头执行（retireChangedChs）；此处只算重聚章
     const aggSet = new Set(readAggregatedChapters());
-    // 参与重聚的章 = 真正新增章 ∪ 改动章（改动章虽在 aggregatedChapters 里，但需重聚）
+    // 参与重聚的章 = 真正新增章 ∪ 改动章（改动章虽在 aggregatedChapters 里，但需重聚）；删除章不重聚
     const newChs = summaries.filter((c) => !aggSet.has(c.number) || changedChs.includes(c.number));
     if (!newChs.length) {
       console.log("\n[增量] 无新增/改动章，跳过语义调用（event.json/volume.json 保持现状）");

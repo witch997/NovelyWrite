@@ -618,8 +618,9 @@ async function apiImportBook(body) {
   if (body.pending) taskArgs.pending = true; // 补建指令：只补 pending 缺章
   else if (from > 0) { taskArgs.from = from; if (to > 0) taskArgs.to = to; } // 续建范围
   else taskArgs.all = true;
-  // 改动章（原稿变更）自动纳入任务：重标 changed + 聚合剔除
+  // 改动/删除章（原稿变更）自动纳入任务：重标 changed + 归档 deleted + 聚合剔除
   if (changeInfo?.changed?.length) taskArgs.changed = changeInfo.changed.join(",");
+  if (changeInfo?.deleted?.length) taskArgs.deleted = changeInfo.deleted.join(",");
   const { taskId } = startTask("annotate", taskArgs);
   const modeParts = [];
   if (changeInfo?.changed?.length) modeParts.push(`重标第${changeInfo.changed.join(",")}章`);

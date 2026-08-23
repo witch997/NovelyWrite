@@ -272,6 +272,8 @@ export async function main(argv = cliArgs()) {
   const toN = argVal("to") ? Number(argVal("to")) : null;       // --to=M: 到第 M 章结束(与 --from 组合=续建范围)
   const chapters = doAll ? null : (chapterArgs ? chapterArgs.split(",").map(Number) : null);
   const changedChs = changedArgs ? changedArgs.split(",").map(Number).filter(Boolean) : [];
+  const deletedArgs = argVal("deleted"); // 删除章（md 没了 → 归档标注 + 聚合剔章号）；my 域专用
+  const deletedChs = deletedArgs ? deletedArgs.split(",").map(Number).filter(Boolean) : [];
   chatCfg = loadChatConfig(); // 惰性读配置（main 调用时——被 import 时不可读，全新目录无 config 会炸）
   baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
   const CORPUS_PATH = path.join(corpusDir, `${corpusName}-语料.txt`);
@@ -322,7 +324,7 @@ export async function main(argv = cliArgs()) {
       });
   // [task] 进度协议行（task/manager.mjs 统一解析；同时进日志留痕）
   const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`);
-  if (!todo.length) {
+  if (!todo.length && !deletedChs.length) {
     // 无待处理章：--pending 无缺章 = 补建已完成（正常结束，非失败）；
     // 其他模式（--chapter/--from 超范围）也按"无需处理"正常退出，避免红卡误导
     const reason = pendingOnly ? "pending 无未完成章（已全部补齐）" : `范围内无待处理章（${chapters ? `指定 ${chapters.join(",")}` : fromN ? `从${fromN}章起${toN ? `到${toN}章` : ""}` : "all"}）`;
@@ -330,9 +332,14 @@ export async function main(argv = cliArgs()) {
     taskLine({ stage: "done", done: 0, phase: `无需处理：${reason}` });
     process.exit(0);
   }
-  // 本次任务待处理章数（server 端解析为进度 total；--all/--from/--chapter/--pending 通用）
-  console.log(`[host] 本次任务 ${todo.length} 章待处理（${doAll ? "全量" : pendingOnly ? "补建 pending" : chapters ? `指定 ${chapters.join(",")}` : fromN ? `从${fromN}章起${toN ? `到${toN}章` : "到末尾"}` : "未知范围"}）`);
-  taskLine({ stage: "sentence", total: todo.length, done: 0, phase: "准备" });
+  if (!todo.length && deletedChs.length) {
+    // 仅删除章（无重标任务）：归档标注 → 直接触发聚合剔除
+    console.log(`\n[host] 仅删除章处理（${deletedChs.join(",")}）：归档标注 + 聚合剔除`);
+  } else {
+    // 本次任务待处理章数（server 端解析为进度 total；--all/--from/--chapter/--pending 通用）
+    console.log(`[host] 本次任务 ${todo.length} 章待处理（${doAll ? "全量" : pendingOnly ? "补建 pending" : chapters ? `指定 ${chapters.join(",")}` : fromN ? `从${fromN}章起${toN ? `到${toN}章` : "到末尾"}` : "未知范围"}）`);
+    taskLine({ stage: "sentence", total: todo.length, done: 0, phase: "准备" });
+  }
   // 建库范围提示：全量/大批次开销大，推荐分批（每次 ≤30 章）
   if (doAll) console.log(`\n⚠ 全量建库（${todo.length} 章）——一次开销较大（LLM token），如非必要建议分批续建（每次 ≤30 章）\n`);
   else if (todo.length > 30) console.log(`\n⚠ 本次建库 ${todo.length} 章，超过推荐单批上限（30 章）——建议分批以控制开销\n`);
@@ -532,14 +539,16 @@ export async function main(argv = cliArgs()) {
   const totalChapters = todo.length;
   let processedCh = 0, failedCh = 0, okCount = 0; // okCount: 本批成功章数（批末自动聚合依据）
 
-  /* ---- 改动章预处理（--changed）：快照旧标注 → 删旧标注（当缺章重标） ---- */
+  /* ---- 改动/删除章预处理（--changed/--deleted）：快照旧标注 → 删旧标注 ---- */
   const changedSet = new Set(changedChs);
+  const deletedSet = new Set(deletedChs);
   let snapDir = null; // 快照目录（整批一个）
-  if (changedSet.size) {
+  if (changedSet.size || deletedSet.size) {
     const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
     snapDir = path.join(PROJECT_DIR, "标注备份", ts);
     fs.mkdirSync(snapDir, { recursive: true });
-    console.log(`\n[host] 改动章 ${[...changedSet].join(",")} 重标前快照 → ${path.relative(PROJECT_DIR, snapDir)}`);
+    const all = [...new Set([...changedSet, ...deletedSet])];
+    console.log(`\n[host] 变更章 ${all.join(",")} 处理前快照 → ${path.relative(PROJECT_DIR, snapDir)}`);
     // 保留最近 3 份快照（更早清理）
     const snapRoot = path.join(PROJECT_DIR, "标注备份");
     if (fs.existsSync(snapRoot)) {
@@ -547,15 +556,17 @@ export async function main(argv = cliArgs()) {
       while (snaps.length > 3) fs.rmSync(path.join(snapRoot, snaps.shift()), { recursive: true, force: true });
     }
   }
-  const snapshotChanged = (ch) => {
-    if (!snapDir) return;
-    const pad = String(ch.number).padStart(4, "0");
+  /** 备份某章标注到快照并删除当前标注（重标/删除前调用）；返回是否备份成功 */
+  const backupAndRemove = (chNum) => {
+    if (!snapDir) return false;
+    const pad = String(chNum).padStart(4, "0");
     const pairs = [
       [`语料分章/第${pad}章_*.txt`, "语料分章"],
       [`句子标注/json/第${pad}章.json`, "句子标注/json"],
       [`分镜标注/json/第${pad}章.json`, "分镜标注/json"],
       [`章节/第${pad}章.json`, "章节"],
     ];
+    let backed = false;
     for (const [glob, dir] of pairs) {
       const srcDir = path.join(PROJECT_DIR, dir);
       if (!fs.existsSync(srcDir)) continue;
@@ -565,12 +576,46 @@ export async function main(argv = cliArgs()) {
         const from = path.join(srcDir, f);
         const to = path.join(snapDir, dir, f);
         fs.mkdirSync(path.dirname(to), { recursive: true });
-        try { fs.copyFileSync(from, to); } catch { /* 复制失败忽略 */ }
-        fs.unlinkSync(from); // 删旧标注（重标产物全新）
+        try { fs.copyFileSync(from, to); backed = true; } catch { /* 复制失败忽略 */ }
+        fs.unlinkSync(from); // 删旧标注
         console.log(`  [快照+删] ${dir}/${f}`);
       }
     }
+    return backed;
   };
+  /** 从快照恢复某章标注（重标失败回滚——B2） */
+  const restoreFromSnapshot = (chNum) => {
+    if (!snapDir) return;
+    const pad = String(chNum).padStart(4, "0");
+    const pairs = [
+      ["语料分章", `第${pad}章_`],
+      ["句子标注/json", `第${pad}章.json`],
+      ["分镜标注/json", `第${pad}章.json`],
+      ["章节", `第${pad}章.json`],
+    ];
+    for (const [dir, prefix] of pairs) {
+      const srcDir = path.join(snapDir, dir);
+      if (!fs.existsSync(srcDir)) continue;
+      for (const f of fs.readdirSync(srcDir)) {
+        if (!f.startsWith(prefix)) continue;
+        const to = path.join(PROJECT_DIR, dir, f);
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        try { fs.copyFileSync(path.join(srcDir, f), to); console.log(`  [恢复] ${dir}/${f}`); } catch { /* 恢复失败忽略 */ }
+      }
+    }
+  };
+  /** 删除章归档处理（A1）：标注已备份，聚合章号由批末 aggregates --deleted 剔除 */
+  const retireDeleted = (chNum) => {
+    backupAndRemove(chNum); // 归档到快照（保历史）
+    // 从指纹移除（该章不再存在）
+    if (domain === DOMAIN.MY) {
+      const cur = readFingerprints(PROJECT_DIR);
+      if (chNum in cur) { delete cur[chNum]; writeFingerprints(PROJECT_DIR, cur); console.log(`  [指纹] 第${chNum}章 已移除`); }
+    }
+    console.log(`  [删除] 第${chNum}章 标注已归档（聚合剔除由批末 aggregates 处理）`);
+  };
+  /** 本次任务写入指纹的章号（B1：聚合失败时回滚，下次检测仍视为改动） */
+  const fingerprintWritten = new Set();
   const updateFingerprint = (ch) => {
     if (domain !== DOMAIN.MY) return; // 指纹仅 my 域
     const cur = readFingerprints(PROJECT_DIR);
@@ -579,14 +624,18 @@ export async function main(argv = cliArgs()) {
       const md = fs.readFileSync(path.join(mybookDir, corpusName, `第${String(ch.number).padStart(4, "0")}章.md`), "utf-8");
       cur[ch.number] = chapterHash(md);
       writeFingerprints(PROJECT_DIR, cur);
+      fingerprintWritten.add(ch.number); // 记录本次写入（B1：聚合失败时回滚）
       console.log(`  [指纹] 第${ch.number}章 指纹已更新`);
     } catch { /* md 不存在（deleted 场景）→ 不更新 */ }
   };
 
+  // 删除章先处理（无重标，仅归档 + 指纹移除）
+  for (const d of deletedChs) retireDeleted(d);
+
   for (const ch of todo) {
     processedCh++;
     const fuse = failedCh / processedCh > 0.3; // 熔断：已处理章失败率 >30% → 停止自动重跑/fix
-    if (changedSet.has(ch.number)) snapshotChanged(ch); // 改动章：快照 + 删旧标注
+    if (changedSet.has(ch.number)) backupAndRemove(ch.number); // 改动章：快照 + 删旧标注
     let result = await runChapter(ch);
     if (!result.ok && !fuse) {
       console.log(`\n[host] ⚠ 第${ch.number}章失败（${result.issue.slice(0, 50)}），自动重跑第 2 次...`);
@@ -594,6 +643,8 @@ export async function main(argv = cliArgs()) {
     }
     if (!result.ok) {
       failedCh++;
+      // 改动章重标失败 → 从快照恢复旧标注（B2：不留缺章，下次检测仍为改动 → 再重试）
+      if (changedSet.has(ch.number)) restoreFromSnapshot(ch.number);
       // 自动 fix（分镜/章节文件已落盘才跑——文件缺失时 fix 无下手处）
       const pad = String(ch.number).padStart(4, "0");
       const hasShots = fs.existsSync(path.join(PROJECT_DIR, `分镜标注/json/第${pad}章.json`));
@@ -667,18 +718,28 @@ export async function main(argv = cliArgs()) {
    * 语义：成功章 > 0 才跑（全失败 → aggregates 无输入会 exit(1)，需跳过）；
    * 聚合增量模式：无新增章时零 LLM 开销；失败章不占 aggregatedChapters 名额，补跑成功后下次自然聚合；
    * 聚合失败仅 warning（不拖垮 annotate）——聚合有 incremental-state.json 幂等重入，下次自动/手动聚合可续跑。 */
-  if (okCount > 0) {
-    console.log(`\n[host] 批末自动补跑增量聚合（本批成功 ${okCount} 章）...`);
+  if (okCount > 0 || changedSet.size || deletedSet.size) {
+    console.log(`\n[host] 批末自动补跑增量聚合（本批成功 ${okCount} 章${changedSet.size ? `，改动 ${[...changedSet].join(",")}` : ""}${deletedSet.size ? `，删除 ${[...deletedSet].join(",")}` : ""}）...`);
     try {
       // 改动章（changed）传给聚合：aggregates 机械剔除章号后走增量
       const aggArgsBase = [corpusName];
       if (changedSet.size) aggArgsBase.push(`--changed=${[...changedSet].join(",")}`);
+      if (deletedSet.size) aggArgsBase.push(`--deleted=${[...deletedSet].join(",")}`);
       const [aggCmd, aggArgs, aggEnv] = runScriptArgs("novelread/aggregates.mjs", aggArgsBase);
       const aggOut = execFileSync(aggCmd, aggArgs, { encoding: "utf-8", env: aggEnv, timeout: 600000, maxBuffer: 32 * 1024 * 1024 }); // 10 分钟（聚合 3 次 LLM 调用）
       console.log(aggOut.trim().slice(-1500)); // 只回显尾部关键信息（新增章/完成/索引），全文进任务日志
     } catch (e) {
       console.log((e.stdout ?? "").toString().slice(-600) || `[聚合✗] ${e.message}`);
       console.log("  [聚合] 本次聚合未完成（不阻塞）。可用补建指令后的下次任务自动续跑，或手动: node cli.mjs aggregate <书>");
+      // B1：聚合失败 → 回滚本次写入的指纹（标注数据保留，但指纹回退 → 下次检测仍视为改动，聚合会重跑）
+      if (domain === DOMAIN.MY && fingerprintWritten.size) {
+        try {
+          const cur = readFingerprints(PROJECT_DIR);
+          let rolled = 0;
+          for (const n of fingerprintWritten) { if (n in cur) { delete cur[n]; rolled++; } }
+          if (rolled) { writeFingerprints(PROJECT_DIR, cur); console.log(`  [指纹回滚] 聚合失败，回滚 ${rolled} 章指纹（下次检测将重走变更流程）`); }
+        } catch { /* 回滚失败忽略 */ }
+      }
     }
   } else {
     console.log("\n[host] 本批无成功章，跳过自动聚合（失败章补跑成功后批末会自动聚合）");

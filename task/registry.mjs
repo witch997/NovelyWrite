@@ -19,6 +19,7 @@ function argsOfAnnotate(b) {
   const a = [];
   if (!b?.project) throw new NovelyError("ARG_REQUIRED", { context: { field: "project" } });
   a.push(`--corpus=${b.project}`, `--domain=${b.domain ?? DOMAIN.EX}`);
+  const hasRange = b.all || b.chapter || b.pending || b.from;
   if (b.all) a.push("--all");
   else if (b.chapter) a.push(`--chapter=${String(b.chapter).trim()}`); // 逗号列表单参数（host-exec 内部分 split）
   else if (b.pending) a.push("--pending"); // 补建指令：只补 pending 缺章
@@ -26,9 +27,10 @@ function argsOfAnnotate(b) {
     a.push(`--from=${Number(b.from)}`); // 从第 N 章起
     if (b.to) a.push(`--to=${Number(b.to)}`); // 续建终点（默认到末尾）
   }
-  else throw new NovelyError("ARG_REQUIRED", { context: { field: "all|chapter|from" } });
-  // 改动章（原稿内容变更 → 删标注重标）：与范围参数并存，独立标记
+  // 改动/删除章（原稿变更 → 删标注重标 / 归档剔除）：可与范围并存，也可单独触发（仅删章场景）
   if (b.changed) a.push(`--changed=${String(b.changed).trim()}`);
+  if (b.deleted) a.push(`--deleted=${String(b.deleted).trim()}`);
+  if (!hasRange && !b.changed && !b.deleted) throw new NovelyError("ARG_REQUIRED", { context: { field: "all|chapter|from|changed|deleted" } });
   return a;
 }
 
