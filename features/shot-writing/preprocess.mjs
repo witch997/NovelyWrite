@@ -136,7 +136,7 @@ export async function main() {
         "",
         "## 合法枚举",
         "type: 信息/对话/心理/动作/事件/环境",
-        "funcs: 塑造人物/引入世界观/设置动机/推进/铺垫/反转/爆发/转场/收束分镜/悬念/冲突",
+        "funcs: 塑造人物/引入世界观/设置动机/推进/铺垫/反转/爆发/转场/收束分镜/悬念",
         "",
         "## 输出格式",
         '{"summary": "<7字以下概括>", "shots": [{"seq":1,"type":"...","funcs":[...],"label":"...","content":"..."}, ...]}',
@@ -160,7 +160,7 @@ export async function main() {
         "",
         "## 合法枚举",
         "type: 信息/对话/心理/动作/事件/环境",
-        "funcs: 塑造人物/引入世界观/设置动机/推进/铺垫/反转/爆发/转场/收束分镜/悬念/冲突",
+        "funcs: 塑造人物/引入世界观/设置动机/推进/铺垫/反转/爆发/转场/收束分镜/悬念",
         "",
         "## 输出格式",
         '{"summary": "<7字以下概括>", "shots": [{"seq":1,"type":"...","funcs":[...],"label":"...","content":"..."}, ...]}',
@@ -180,7 +180,7 @@ export async function main() {
   // 脚本补 seq（防 LLM 跳号）+ 校验枚举
   shots = shots.map((s, i) => ({ ...s, seq: i + 1 }));
   const validTypes = ["信息", "对话", "心理", "动作", "事件", "环境"];
-  const validFuncs = ["塑造人物", "引入世界观", "设置动机", "推进", "铺垫", "反转", "爆发", "转场", "收束分镜", "悬念", "冲突"];
+  const validFuncs = ["塑造人物", "引入世界观", "设置动机", "推进", "铺垫", "反转", "爆发", "转场", "收束分镜", "悬念"];
   const badType = shots.filter((s) => !validTypes.includes(s.type));
   const badFunc = shots.filter((s) => !(s.funcs ?? []).length || s.funcs.some((f) => !validFuncs.includes(f)));
   if (badType.length) console.warn(`  ⚠ ${badType.length} 镜 type 非法（LLM 输出）: ${badType.map((s) => s.type).join("/")}`);
