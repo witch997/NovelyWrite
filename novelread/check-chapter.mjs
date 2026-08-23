@@ -243,7 +243,8 @@ if (ca) {
         shotTypeDist[x.type] = (shotTypeDist[x.type] ?? 0) + 1;
         for (const f of x.funcs ?? []) funcDist[f] = (funcDist[f] ?? 0) + 1;
       }
-      const short = ss.filter((x) => (x.text ?? "").replace(/\s/g, "").length <= 12).length;
+      // 短句 = LLM 标注的 struct=「短句」（与 derive-chapter.mjs 口径一致，不按字符数机械判定）
+      const short = ss.filter((x) => x.struct === "短句").length;
       const cluster = ss.filter((x) => x.struct === "句从").length;
       const expectStats = {
         sentenceCount: ss.length, shotCount: sh.length, shotTypeDist, funcDist,
