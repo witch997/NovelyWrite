@@ -268,6 +268,10 @@ function bodyFromArgs(args) {
   if (project) body.project = project;
   if (args.includes("--all")) body.all = true;
   if (args.includes("--pending")) body.pending = true;
+  const changed = argVal("changed");
+  if (changed) body.changed = changed; // 原参数重跑保留 changed（改动章重标）
+  const deleted = argVal("deleted");
+  if (deleted) body.deleted = deleted; // 原参数重跑保留 deleted（删章归档）
   const chapter = argVal("chapter");
   if (chapter) body.chapter = chapter;
   const from = argVal("from");

@@ -364,6 +364,23 @@ async function buildProjectVectors(project, embedCfg, opts = {}) {
     built++;
   }
 
+  // C1：清理孤儿向量（deleted 章/文件被删后残留）——index.chapters 里当前不存在的章
+  // 移除条目 + 删除向量文件，防检索召回已删章（幽灵向量）
+  const liveKeys = new Set(jobs.map(({ project: pj, chapter }) => `${pj}:${chapter}`));
+  const staleKeys = Object.keys(index.chapters).filter((k) => !liveKeys.has(k));
+  if (staleKeys.length) {
+    let removedFiles = 0;
+    for (const k of staleKeys) {
+      const rec = index.chapters[k];
+      if (rec?.file) {
+        const fp = path.join(vDir, path.basename(rec.file));
+        try { if (fs.existsSync(fp)) { fs.unlinkSync(fp); removedFiles++; } } catch { /* 删失败忽略 */ }
+      }
+      delete index.chapters[k];
+    }
+    console.log(`[向量] ${project}: 清理孤儿向量 ${staleKeys.length} 章（deleted/文件缺失残留，删文件 ${removedFiles} 个）`);
+  }
+
   index.schema = "dsh/vector-index/v1";
   index.project = project;
   index.embedding = { provider: "siliconflow", model: embedCfg.model, dimension: embedCfg.dimension };
