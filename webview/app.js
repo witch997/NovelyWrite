@@ -1415,9 +1415,11 @@
     loadLatestDraft(); // 刷新后自动显示最近成稿（无成稿则忽略）
     applyAutoSaveSetting(); // 定时自动保存（设置间隔，默认 5 分钟）
     // WebUI 心跳：每 15s 上报存活；页面关闭后 server 60s 无心跳自动退出
-    setInterval(() => {
-      fetch("/api/system/heartbeat", { method: "POST" }).catch(() => {});
-    }, 15000);
+    // （server 有保护：任务运行中/刚结束时心跳超时不退出，见 server.mjs startHeartbeatWatch）
+    const heartbeat = () => fetch("/api/system/heartbeat", { method: "POST" }).catch(() => {});
+    setInterval(heartbeat, 15000);
+    // 标签页从休眠/后台恢复可见时立即补一次心跳（不等下一个 15s 间隔，尽快续上存活状态）
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) heartbeat(); });
   }
 
   init();

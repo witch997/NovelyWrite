@@ -155,8 +155,8 @@ function startTask(script, targs, label) {
   };
   child.stdout.on("data", push);
   child.stderr.on("data", push);
-  child.on("error", (err) => { t.status = "failed"; t.finishedAt = new Date().toISOString(); t.code = -1; t.error = err.message; persistTask(t); });
-  child.on("close", (code) => { t.status = code === 0 ? "success" : "failed"; t.finishedAt = new Date().toISOString(); t.code = code; persistTask(t); });
+  child.on("error", (err) => { t.status = "failed"; t.finishedAt = new Date().toISOString(); t.code = -1; t.error = err.message; taskFinishedAt = Date.now(); persistTask(t); });
+  child.on("close", (code) => { t.status = code === 0 ? "success" : "failed"; t.finishedAt = new Date().toISOString(); t.code = code; taskFinishedAt = Date.now(); persistTask(t); });
   persistTask(t);
   return id;
 }
@@ -503,8 +503,14 @@ function apiOpenFolder(body) {
 /* ================= 心跳（WebUI 关闭 → server 自动退出） =================
  * 页面每 15s 发一次 POST /api/system/heartbeat；server 60s 无心跳 → 自动退出。
  * 仅在页面激活过心跳后生效（未开页面的 CLI/API 使用不退出）。--no-heartbeat 关闭。
+ * 保护：
+ *   1. 有长任务在运行（taskState 存在 running）→ 心跳超时【不退出】——
+ *      页面被浏览器休眠/杀掉（tab discarding、内存回收）时心跳停发，任务必须跑完，不能连带被杀。
+ *   2. 任务刚结束（taskFinishedAt 距今 < 60s）→ 也不退出——给用户切回被休眠页面的宽限窗口。
+ *   3. 任务全部结束且宽限期过 → 恢复心跳退出判定。
  */
 let lastHeartbeat = null; // 页面最后心跳时间（null=页面未激活，不退出）
+let taskFinishedAt = null; // 最近一个任务结束时刻（任务完成后给心跳宽限期）
 
 /** POST /api/system/heartbeat — 页面存活心跳 */
 function apiHeartbeat() {
@@ -512,13 +518,29 @@ function apiHeartbeat() {
   return { ok: true };
 }
 
-/** 心跳检查定时器（main 内启动）：页面关闭后 60s 无心跳 → 退出进程 */
+/** 是否有任务正在运行（内存态；含 SEA 子进程） */
+function hasRunningTask() {
+  for (const t of taskState.values()) {
+    if (t.status === "running") return true;
+  }
+  return false;
+}
+
+/** 心跳检查定时器（main 内启动）：页面关闭后 60s 无心跳 → 退出进程（有任务运行/刚结束则挂起） */
 function startHeartbeatWatch() {
   setInterval(() => {
-    if (lastHeartbeat && Date.now() - lastHeartbeat > 60_000) {
-      console.log("\n[server] 未检测到 WebUI 心跳（页面已关闭），自动退出。");
-      process.exit(0);
+    if (!lastHeartbeat || Date.now() - lastHeartbeat <= 60_000) return;
+    if (hasRunningTask()) {
+      // 页面心跳丢失但有任务在跑：不退出，任务继续（等任务结束后再判）
+      console.log("[server] 页面心跳丢失（浏览器可能休眠/关闭了页面），但有任务运行中——继续运行，不退出。");
+      return;
     }
+    if (taskFinishedAt && Date.now() - taskFinishedAt <= 60_000) {
+      // 任务刚结束：给用户切回页面的宽限窗口，暂不退出
+      return;
+    }
+    console.log("\n[server] 未检测到 WebUI 心跳（页面已关闭），自动退出。");
+    process.exit(0);
   }, 10_000);
 }
 
