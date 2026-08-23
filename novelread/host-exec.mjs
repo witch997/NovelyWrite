@@ -608,6 +608,15 @@ export async function main(argv = cliArgs()) {
   } else {
     console.log("\n[host] 本批无成功章，跳过自动聚合（失败章补跑成功后批末会自动聚合）");
   }
+
+  // 任务终态判定：有失败章 → 退出码 1（server 端按退出码标记 failed，前端显示失败+重跑按钮；
+  // 避免"补跑后仍缺章"却被显示为成功——缺章以红卡驻留提示，直到补齐）
+  if (failedCh > 0) {
+    console.log(`\n❌ 本批 ${failedCh} 章失败（已记录 pending.json）。任务标记为失败——可用补建指令重跑缺章，或等下次任务自动续跑。`);
+    process.exitCode = 1;
+  } else {
+    console.log("\n✅ 本批全部成功。");
+  }
 }
 
 // 仅直接运行时执行 main
