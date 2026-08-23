@@ -265,6 +265,7 @@
               card.el.classList.remove("failed");
               card.el.classList.add("success");
               this.dismissTask(t.id);
+              this.scheduleRefPoolRefresh(); // 缺章已补齐 → 参考书池缺章标记同步消失
               setTimeout(() => { if (this.cards.has(t.id)) this.removeCard(t.id); }, 2500);
               return;
             }
@@ -319,6 +320,13 @@
         setTimeout(() => { if (this.cards.has(t.id) && !card.failed) this.removeCard(t.id); }, 3500);
       }
       this.refreshCount();
+      // 建库类任务结束（成功/失败/被杀都算）→ 刷新参考书池（缺章标记/pending 提示自动更新，无需手动刷新页面）
+      if (t.script === "novelread/host-exec.mjs") this.scheduleRefPoolRefresh();
+    },
+    /** 任务结束 → 刷新参考书池（防抖：任务结束时集中触发一次，避免多任务同时结束重复拉取） */
+    scheduleRefPoolRefresh() {
+      clearTimeout(this._refPoolTimer);
+      this._refPoolTimer = setTimeout(() => { try { loadRefPool(); } catch { /* 刷新失败忽略 */ } }, 800);
     },
     removeCard(id) {
       const card = this.cards.get(id);
