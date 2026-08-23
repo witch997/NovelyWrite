@@ -36,7 +36,7 @@ import { loadChatConfig } from "../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-let args, project, flags, projectDir, corpusList, listPath, stateDir; // 惰性初始化（被 import 时不可有副作用）
+let args, project, flags, projectDir, corpusList, listPath, stateDir, changedChs = []; // 惰性初始化（被 import 时不可有副作用）
 
 /** 解析 CLI 参数（延迟到 main 调用——被 sea-main import 时无参数，不能执行 projectRoot） */
 function parseArgs() {
@@ -44,6 +44,11 @@ function parseArgs() {
   args = cliArgs(); // SEA 分发兼容（过滤 "run <script>" 前缀）
   project = args.find((a) => !a.startsWith("--")) ?? "大王饶命";
   flags = args.filter((a) => a.startsWith("--"));
+  // --changed=1,3：改动章（原稿变更重标后，机械剔除章号再走增量）
+  changedChs = (() => {
+    const a = flags.find((x) => x.startsWith("--changed="));
+    return a ? a.slice("--changed=".length).split(",").map(Number).filter(Boolean) : [];
+  })();
   projectDir = projectRoot(project); // 域感知：两域自动探测
   corpusList = path.join(corpusDir, `${project}-章节清单.csv`);
   listPath = fs.existsSync(corpusList) ? corpusList : path.join(corpusDir, "章节清单.csv");
@@ -408,6 +413,66 @@ function writeIncrState(batch, tempTs) {
   fs.writeFileSync(incrStatePath(), JSON.stringify({ schema: "dsh/incremental-state/v1", batch, tempTs, phase: "started", startedAt: now() }, null, 2) + "\n", "utf-8");
 }
 
+/* ================= 改动章机械剔除（--changed） =================
+ * 原则：mybook 原稿 = 唯一事实源。改动章重标后（标注层已最新），聚合层的旧引用
+ * 必须剔除——否则"幽灵实体"（聚合还引用已重写/已删除的章）。
+ * 纯机械、零 LLM：
+ *   1. event.lifecycle[].持续章 / volume.targets[].evidenceChapters 移除 X
+ *   2. 剔空 → 物理删条目（历史由快照承担）
+ *   3. X==开始章 → 开始章=min(剩余)；X==结束章且已回收 → 结束章=max(剩余)
+ *   4. 直接写回（受控绕过前向单调校验——这是"框架修订"不是"增量延伸"）
+ * 之后跑增量 merge（改动章新 summary 当新章），merge 负责"并回/新增"语义对应。
+ */
+function retireChangedChs(chs) {
+  const set = new Set(chs);
+  let removedItems = 0, removedChs = 0, fixed = 0;
+  const retireArr = (obj, arrName, chField, startField, endField, stateField) => {
+    const arr = obj[arrName];
+    if (!Array.isArray(arr)) return;
+    const kept = [];
+    for (const item of arr) {
+      const chsList = item[chField];
+      if (!Array.isArray(chsList)) { kept.push(item); continue; }
+      const before = chsList.length;
+      const after = chsList.filter((n) => !set.has(n));
+      const removed = before - after.length;
+      if (removed) removedChs += removed;
+      if (!after.length) {
+        // 剔空 → 物理删条目（历史在快照）
+        removedItems++;
+        continue;
+      }
+      item[chField] = after;
+      // 生命周期修正：X==开始章 → min(剩余)；X==结束章且已回收 → max(剩余)
+      if (startField && set.has(item[startField]) && after.length) {
+        const min = Math.min(...after);
+        if (min !== item[startField]) { item[startField] = min; fixed++; }
+      }
+      if (endField && endField in item && set.has(item[endField]) && after.length) {
+        const max = Math.max(...after);
+        if (max !== item[endField]) { item[endField] = max; fixed++; }
+      }
+      kept.push(item);
+    }
+    obj[arrName] = kept;
+  };
+  // event.json
+  const evP = path.join(projectDir, "大事件", "event.json");
+  if (fs.existsSync(evP)) {
+    const ev = JSON.parse(fs.readFileSync(evP, "utf-8"));
+    retireArr(ev, "lifecycle", "持续章", "开始章", "结束章", "state");
+    fs.writeFileSync(evP, JSON.stringify(ev, null, 2) + "\n", "utf-8");
+  }
+  // volume.json
+  const volP = path.join(projectDir, "卷纲", "volume.json");
+  if (fs.existsSync(volP)) {
+    const vol = JSON.parse(fs.readFileSync(volP, "utf-8"));
+    retireArr(vol, "targets", "evidenceChapters", null, null, null);
+    fs.writeFileSync(volP, JSON.stringify(vol, null, 2) + "\n", "utf-8");
+  }
+  console.log(`\n[剔除] 改动章 ${chs.join(",")}：剔章号 ${removedChs} 次，物理删条目 ${removedItems} 个，生命周期修正 ${fixed} 处`);
+}
+
 /** 清增量状态（成功完成后调用） */
 function clearIncrState() {
   const p = incrStatePath();
@@ -616,6 +681,9 @@ export function finalizePart(projectDir, project) {
   console.log(`统计: ${sentences} 句 / ${shots} 镜 / ${words} 字`);
 
   // 头文档
+  const metaP = path.join(projectDir, "project-meta.json");
+  let prevMeta = {};
+  try { prevMeta = JSON.parse(fs.readFileSync(metaP, "utf-8")); } catch { /* 首次无旧 meta */ }
   const meta = {
     schema: "dsh/project-meta/v1",
     project,
@@ -629,11 +697,13 @@ export function finalizePart(projectDir, project) {
       jsonFiles: jsonFiles.length,
     },
     verify: { syntaxPass, badFiles, contractIssues, contractReport, verifiedAt: now() },
+    // 保留扩展字段（sourceFingerprints 等——由 mybook 指纹检测/更新写入，finalize 不得覆盖）
+    ...(prevMeta.sourceFingerprints ? { sourceFingerprints: prevMeta.sourceFingerprints } : {}),
     updatedAt: now(),
     generatedBy: "novelread/aggregates.mjs (finalizePart)",
   };
-  fs.writeFileSync(path.join(projectDir, "project-meta.json"), JSON.stringify(meta, null, 2) + "\n", "utf-8");
-  console.log(`\n✅ 头文档已写入: ${projectDir}/project-meta.json（verifiedAt=${meta.verify.verifiedAt}）`);
+  fs.writeFileSync(metaP, JSON.stringify(meta, null, 2) + "\n", "utf-8");
+  console.log(`\n✅ 头文档已写入: ${metaP}（verifiedAt=${meta.verify.verifiedAt}）`);
   return { syntaxPass, contractIssues };
 }
 
@@ -665,10 +735,13 @@ export async function main() {
     console.log("\n（--skip-llm：跳过语义调用①②，event.json/volume.json 保持现状）");
   } else if (!flags.includes("--full") && readAggregatedChapters() !== null) {
     /* ============ 增量模式（默认）：只处理新增章，存量条目零扰动 ============ */
+    // 改动章（--changed）：先机械剔除旧引用（防幽灵实体），再当"新章"走增量 merge
+    if (changedChs.length) retireChangedChs(changedChs);
     const aggSet = new Set(readAggregatedChapters());
-    const newChs = summaries.filter((c) => !aggSet.has(c.number));
+    // 参与重聚的章 = 真正新增章 ∪ 改动章（改动章虽在 aggregatedChapters 里，但需重聚）
+    const newChs = summaries.filter((c) => !aggSet.has(c.number) || changedChs.includes(c.number));
     if (!newChs.length) {
-      console.log("\n[增量] 无新增章，跳过语义调用（event.json/volume.json 保持现状）");
+      console.log("\n[增量] 无新增/改动章，跳过语义调用（event.json/volume.json 保持现状）");
       clearIncrState(); // 清理可能残留的失败状态（已全部聚合，无需重入）
     } else {
       console.log(`\n[增量] 新增章 ${newChs.length} 个: ${newChs.map((c) => c.number).join(",")}`);

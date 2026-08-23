@@ -27,6 +27,8 @@ function argsOfAnnotate(b) {
     if (b.to) a.push(`--to=${Number(b.to)}`); // 续建终点（默认到末尾）
   }
   else throw new NovelyError("ARG_REQUIRED", { context: { field: "all|chapter|from" } });
+  // 改动章（原稿内容变更 → 删标注重标）：与范围参数并存，独立标记
+  if (b.changed) a.push(`--changed=${String(b.changed).trim()}`);
   return a;
 }
 

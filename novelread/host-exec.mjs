@@ -27,6 +27,7 @@ import { STRUCTS, SHOT_TYPES, SHOT_FUNCS, CHAPTER_FUNCS, MAINLINE_STATES } from 
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
 import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir, cliArgs, runScriptArgs } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
+import { chapterHash, readFingerprints, writeFingerprints } from "../task/fingerprint.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -264,11 +265,13 @@ export async function main(argv = cliArgs()) {
   const corpusName = argVal("corpus") ?? "红楼梦";
   const domain = argVal("domain") ?? DOMAIN.EX; // 默认外部知识库；--domain=my 我的作品
   const chapterArgs = argVal("chapter");
+  const changedArgs = argVal("changed"); // 改动章（原稿内容变更 → 删标注重标）；my 域专用
   const doAll = args.includes("--all");
   const pendingOnly = args.includes("--pending"); // 补建指令：只跑 pending.json 里未完成的章
   const fromN = argVal("from") ? Number(argVal("from")) : null; // --from=N: 从第 N 章开始
   const toN = argVal("to") ? Number(argVal("to")) : null;       // --to=M: 到第 M 章结束(与 --from 组合=续建范围)
   const chapters = doAll ? null : (chapterArgs ? chapterArgs.split(",").map(Number) : null);
+  const changedChs = changedArgs ? changedArgs.split(",").map(Number).filter(Boolean) : [];
   chatCfg = loadChatConfig(); // 惰性读配置（main 调用时——被 import 时不可读，全新目录无 config 会炸）
   baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
   const CORPUS_PATH = path.join(corpusDir, `${corpusName}-语料.txt`);
@@ -311,6 +314,7 @@ export async function main(argv = cliArgs()) {
   const todo = doAll
     ? list
     : list.filter((c) => {
+        if (changedChs.length) return changedChs.includes(c.number); // --changed：改动章重标（优先）
         if (chapters) return chapters.includes(c.number);
         if (fromN) return c.number >= fromN && (!toN || c.number <= toN); // --from=N --to=M：续建范围
         if (pendingOnly) return pendingNums.includes(c.number); // --pending：只补未完成章
@@ -527,9 +531,62 @@ export async function main(argv = cliArgs()) {
   /* ===== 主循环：失败自动重跑 1 次 → 仍失败自动 fix + pending 记录；失败率 >30% 熔断 ===== */
   const totalChapters = todo.length;
   let processedCh = 0, failedCh = 0, okCount = 0; // okCount: 本批成功章数（批末自动聚合依据）
+
+  /* ---- 改动章预处理（--changed）：快照旧标注 → 删旧标注（当缺章重标） ---- */
+  const changedSet = new Set(changedChs);
+  let snapDir = null; // 快照目录（整批一个）
+  if (changedSet.size) {
+    const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+    snapDir = path.join(PROJECT_DIR, "标注备份", ts);
+    fs.mkdirSync(snapDir, { recursive: true });
+    console.log(`\n[host] 改动章 ${[...changedSet].join(",")} 重标前快照 → ${path.relative(PROJECT_DIR, snapDir)}`);
+    // 保留最近 3 份快照（更早清理）
+    const snapRoot = path.join(PROJECT_DIR, "标注备份");
+    if (fs.existsSync(snapRoot)) {
+      const snaps = fs.readdirSync(snapRoot).filter((d) => fs.statSync(path.join(snapRoot, d)).isDirectory()).sort();
+      while (snaps.length > 3) fs.rmSync(path.join(snapRoot, snaps.shift()), { recursive: true, force: true });
+    }
+  }
+  const snapshotChanged = (ch) => {
+    if (!snapDir) return;
+    const pad = String(ch.number).padStart(4, "0");
+    const pairs = [
+      [`语料分章/第${pad}章_*.txt`, "语料分章"],
+      [`句子标注/json/第${pad}章.json`, "句子标注/json"],
+      [`分镜标注/json/第${pad}章.json`, "分镜标注/json"],
+      [`章节/第${pad}章.json`, "章节"],
+    ];
+    for (const [glob, dir] of pairs) {
+      const srcDir = path.join(PROJECT_DIR, dir);
+      if (!fs.existsSync(srcDir)) continue;
+      for (const f of fs.readdirSync(srcDir)) {
+        if (glob.includes("*")) { if (!f.startsWith(`第${pad}章_`)) continue; }
+        else if (f !== path.basename(glob)) continue;
+        const from = path.join(srcDir, f);
+        const to = path.join(snapDir, dir, f);
+        fs.mkdirSync(path.dirname(to), { recursive: true });
+        try { fs.copyFileSync(from, to); } catch { /* 复制失败忽略 */ }
+        fs.unlinkSync(from); // 删旧标注（重标产物全新）
+        console.log(`  [快照+删] ${dir}/${f}`);
+      }
+    }
+  };
+  const updateFingerprint = (ch) => {
+    if (domain !== DOMAIN.MY) return; // 指纹仅 my 域
+    const cur = readFingerprints(PROJECT_DIR);
+    // 从当前 md 重算该章 hash（最新原稿 = 标注所依据的版本）
+    try {
+      const md = fs.readFileSync(path.join(storeDir, "..", "mybook", corpusName, `第${String(ch.number).padStart(4, "0")}章.md`), "utf-8");
+      cur[ch.number] = chapterHash(md);
+      writeFingerprints(PROJECT_DIR, cur);
+      console.log(`  [指纹] 第${ch.number}章 指纹已更新`);
+    } catch { /* md 不存在（deleted 场景）→ 不更新 */ }
+  };
+
   for (const ch of todo) {
     processedCh++;
     const fuse = failedCh / processedCh > 0.3; // 熔断：已处理章失败率 >30% → 停止自动重跑/fix
+    if (changedSet.has(ch.number)) snapshotChanged(ch); // 改动章：快照 + 删旧标注
     let result = await runChapter(ch);
     if (!result.ok && !fuse) {
       console.log(`\n[host] ⚠ 第${ch.number}章失败（${result.issue.slice(0, 50)}），自动重跑第 2 次...`);
@@ -556,6 +613,7 @@ export async function main(argv = cliArgs()) {
     } else {
       okCount++; // 成功章计数（批末自动聚合：至少 1 章成功才跑）
       clearPending(ch); // 成功 → 从 pending 移除
+      if (changedSet.has(ch.number)) updateFingerprint(ch); // 改动章重标成功 → 指纹更新
       taskLine({ stage: "sentence", done: okCount, phase: `第${ch.number}章完成（${okCount}/${todo.length}）` });
     }
   }
@@ -612,7 +670,10 @@ export async function main(argv = cliArgs()) {
   if (okCount > 0) {
     console.log(`\n[host] 批末自动补跑增量聚合（本批成功 ${okCount} 章）...`);
     try {
-      const [aggCmd, aggArgs, aggEnv] = runScriptArgs("novelread/aggregates.mjs", [corpusName]);
+      // 改动章（changed）传给聚合：aggregates 机械剔除章号后走增量
+      const aggArgsBase = [corpusName];
+      if (changedSet.size) aggArgsBase.push(`--changed=${[...changedSet].join(",")}`);
+      const [aggCmd, aggArgs, aggEnv] = runScriptArgs("novelread/aggregates.mjs", aggArgsBase);
       const aggOut = execFileSync(aggCmd, aggArgs, { encoding: "utf-8", env: aggEnv, timeout: 600000, maxBuffer: 32 * 1024 * 1024 }); // 10 分钟（聚合 3 次 LLM 调用）
       console.log(aggOut.trim().slice(-1500)); // 只回显尾部关键信息（新增章/完成/索引），全文进任务日志
     } catch (e) {

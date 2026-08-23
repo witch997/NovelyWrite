@@ -56,6 +56,7 @@ import { NovelyError, report } from "./shared/errors.mjs";
 import { loadTaskLog } from "./shared/tasks.mjs";
 // 任务管理（已抽为独立模块 task/manager.mjs——生命周期/进度/重跑/stale/清理，行为零改动）
 import { startTask, listTasks, apiTaskRerun, apiTaskStale, killTask, hasRunningTask, taskFinishedAt, cleanupOnStart } from "./task/manager.mjs";
+import { scanBookFingerprints, diffFingerprints, readFingerprints, writeFingerprints } from "./task/fingerprint.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -563,11 +564,23 @@ function synthCorpusFromMybook(base) {
 async function apiImportBook(body) {
   const domain = body?.domain === "my" ? DOMAIN.MY : DOMAIN.EX; // 默认外部（向后兼容）
   let base;
+  let changeInfo = null; // my 域原稿变更检测结果（changed/newChs/deleted）
   if (domain === DOMAIN.MY) {
     // 我的书：从 mybook 原稿合成语料 + 章节清单（不依赖上传 txt）
     base = (body?.name ?? "").trim();
     if (!base || !CORPUS_NAME_RE.test(base)) {
       throw new NovelyError("ARG_INVALID", { context: { field: "name", value: base, rule: "仅中文/字母/数字等" } });
+    }
+    // 原稿变更检测：对比 mybook 当前 md 指纹 vs project-meta.sourceFingerprints
+    // 原则：mybook = 唯一事实源。changed=内容变(重标)、newChs=新增(续建)、deleted=md没了(剔除)
+    const projectDir = (() => { try { return projectRoot(base, DOMAIN.MY); } catch { return null; } })();
+    if (projectDir) {
+      const prev = readFingerprints(projectDir);
+      const { fingerprints: cur, missing } = scanBookFingerprints(base, prev);
+      const diff = diffFingerprints(prev, cur);
+      changeInfo = { changed: diff.changed, newChs: diff.newChs, deleted: diff.deleted };
+      // 无历史指纹（首次建库）→ 本次建立基线（不改动章不重标，只记指纹）
+      if (!Object.keys(prev).length) writeFingerprints(projectDir, cur);
     }
     synthCorpusFromMybook(base);
   } else {
@@ -606,9 +619,15 @@ async function apiImportBook(body) {
   if (body.pending) taskArgs.pending = true; // 补建指令：只补 pending 缺章
   else if (from > 0) { taskArgs.from = from; if (to > 0) taskArgs.to = to; } // 续建范围
   else taskArgs.all = true;
+  // 改动章（原稿变更）自动纳入任务：重标 changed + 聚合剔除
+  if (changeInfo?.changed?.length) taskArgs.changed = changeInfo.changed.join(",");
   const { taskId } = startTask("annotate", taskArgs);
-  const modeDesc = body.pending ? "补建缺章" : from > 0 ? `从第${from}章续建${to > 0 ? `到第${to}章` : "到末尾"}` : "全量";
-  return { ok: true, name: base, domain, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: modeDesc };
+  const modeParts = [];
+  if (changeInfo?.changed?.length) modeParts.push(`重标第${changeInfo.changed.join(",")}章`);
+  if (changeInfo?.deleted?.length) modeParts.push(`剔除第${changeInfo.deleted.join(",")}章`);
+  if (changeInfo?.newChs?.length) modeParts.push(`新增第${changeInfo.newChs.join(",")}章`);
+  const modeDesc = body.pending ? "补建缺章" : from > 0 ? `从第${from}章续建${to > 0 ? `到第${to}章` : "到末尾"}` : modeParts.length ? modeParts.join(" + ") : "全量";
+  return { ok: true, name: base, domain, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: modeDesc, change: changeInfo };
 }
 
 /* ================= 路由 ================= */

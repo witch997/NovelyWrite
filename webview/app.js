@@ -968,7 +968,17 @@
     try {
       const r = await api("/api/tasks/import-book", { method: "POST", body: JSON.stringify(body) });
       const modeDesc = body.pending ? "补建缺章" : body.to ? `续建第${body.from}~${body.to}章` : r.mode;
-      toast(`✅ 已开始建库《${r.name}》（${modeDesc}）`);
+      // 变更检测结果（原稿变更 → 重标/剔除/新增）透传提示
+      const ch = r.change;
+      let changeNote = "";
+      if (ch) {
+        const parts = [];
+        if (ch.changed?.length) parts.push(`重标第${ch.changed.join(",")}章`);
+        if (ch.deleted?.length) parts.push(`剔除第${ch.deleted.join(",")}章`);
+        if (ch.newChs?.length) parts.push(`新增第${ch.newChs.join(",")}章`);
+        changeNote = parts.length ? `（检测到原稿变更：${parts.join("、")}）` : "";
+      }
+      toast(`✅ 已开始建库《${r.name}》${modeDesc}${changeNote}`);
       await loadRefPool(); // 刷新参考书池（我的书会以「我的」域出现）
     } catch (err) {
       toast(`建库失败: ${err.message}`);
