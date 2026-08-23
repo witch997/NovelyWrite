@@ -279,12 +279,14 @@ export async function main() {
         `${i + 1}. [${r.source}] 第${r.chapter}章 分镜${r.shotId}（${r.type}/${(r.funcs ?? []).join("、")}「${r.label ?? ""}」）：${r.text ?? ""}`
       ).join("\n")
     : "（无参考）";
-  // 前后分镜上下文（供本镜写作锚定：前镜的结局 → 本镜起点；后镜的起点 → 本镜收尾衔接）
-  const prevShot = si > 0 ? shots[si - 1] : null;
+  // 上下文（供本镜写作锚定）：前两分镜（更完整的来龙去脉）→ 本镜起点；后一分镜的起点 → 本镜收尾衔接
+  const prevShot1 = si > 0 ? shots[si - 1] : null;
+  const prevShot2 = si > 1 ? shots[si - 2] : null;
   const nextShot = si < shots.length - 1 ? shots[si + 1] : null;
-  const prevText = prevShot
-    ? `【前一分镜·第${prevShot.seq}镜】${prevShot.type}「${prevShot.label ?? ""}」：${prevShot.content ?? ""}`
-    : "（无前一分镜，本镜是开场）";
+  const prevText = [
+    prevShot2 ? `【前二分镜·第${prevShot2.seq}镜】${prevShot2.type}「${prevShot2.label ?? ""}」：${prevShot2.content ?? ""}` : null,
+    prevShot1 ? `【前一分镜·第${prevShot1.seq}镜】${prevShot1.type}「${prevShot1.label ?? ""}」：${prevShot1.content ?? ""}` : "（无前一分镜，本镜是开场）",
+  ].filter(Boolean).join("\n");
   const nextText = nextShot
     ? `【后一分镜·第${nextShot.seq}镜】${nextShot.type}「${nextShot.label ?? ""}」：${nextShot.content ?? ""}`
     : "（无后一分镜，本镜是收尾）";
@@ -296,8 +298,8 @@ export async function main() {
     "### 前后分镜上下文（明确衔接，写作本镜时必须与它们连贯）",
     prevText,
     nextText,
-    "注意：你写的是【中间的本镜】，前一分镜是它的起点，后一分镜是它的终点——",
-    "本镜的结尾要为后一分镜的起点留好衔接（人物状态/场景/事件），本镜开头要承接前一分镜的结局。",
+    "注意：你写的是【中间的本镜】，前一分镜（含前二分镜）是它的来龙去脉，后一分镜是它的终点——",
+    "本镜的结尾要为后一分镜的起点留好衔接（人物状态/场景/事件），本镜开头要承接前一分镜的结局（如有前二分镜，本镜的铺垫/伏笔要延续其走向）。",
     "",
     "### 本镜风格指纹（强制遵循）",
     styleProfile || "（无风格指纹，按下方【内含提炼】自行把握）",
