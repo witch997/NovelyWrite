@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 /**
- * task/manager.mjs — 任务管理器（从 server.mjs 原样抽出的模块，行为零改动）
+ * task/manager.mjs — 任务管理器（生命周期 / 进度 / 队列 / 重跑 / stale / 清理）
  *
- * 职责：长任务生命周期管理 —— 启动子进程、进度解析、状态持久化、列表查询、
- *       重跑/停止/stale 判定、启动清理。纯 Node 模块，不依赖 HTTP。
+ * P0/P1 修复版（2026-08-23）：
+ *   P0-1 kill 真杀：taskState 存 {t, child, killed}；kill 调 child.kill()；close 防覆盖
+ *   P0-3 状态机：status 增加 queued；结束生成 summary（部分成功可表达）；error 结构化
+ *   P1-1 注册表：startTask(kind, body) 查 task/registry.mjs，类型单一事实源
+ *   P1-2 并发队列：并发域（build 串行 / writing 串行，跨域并行）
+ *   P1-3 IO：progress 写盘节流（≥500ms 合并一次）；日志追加优化在 shared/tasks.mjs
+ *   进度协议：业务脚本输出 [task] {stage,done,total,phase,error} JSON 行 → 统一解析
  *
- * 本文件是【结构性搬家】产物：函数体与 server.mjs 抽取前完全一致，未做任何
- * 行为改动。已知设计问题统一记录在 task/ISSUES.md（只记录、未修复）。
- *
- * 依赖：
- *   shared/paths.mjs（runScriptArgs/isSeaRuntime/CODE_ROOT/DATA_ROOT/DOMAIN 等）
- *   shared/tasks.mjs（状态/日志持久化）
- *   shared/errors.mjs（NovelyError）
+ * 遗留（未修，见 task/ISSUES.md）：P2 重启恢复 / API 分页增量 / 前端轮询放大。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -19,83 +18,161 @@ import { spawn } from "node:child_process";
 import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, isSeaRuntime, runScriptArgs } from "../shared/paths.mjs";
 import { NovelyError } from "../shared/errors.mjs";
 import { persistTask, appendTaskLog, loadTaskLog, listTasks as listTasksFromDisk } from "../shared/tasks.mjs";
+import { TASK_KINDS, kindOfScript } from "./registry.mjs";
 
 const NODE = process.execPath;
 
-/* ================= 长任务管理器（子进程 + 状态文件，复用 shared/tasks.mjs） ================= */
-const taskState = new Map(); // id → {id, script, args, status, startedAt, finishedAt, code}
+/* ================= 任务状态（内存） =================
+ * taskState: id → { t, child, killed }
+ *   t     任务对象（含 progress/phase/stage/summary/error 等结构化字段）
+ *   child 子进程句柄（kill 真杀用；排队中为 null）
+ *   killed 用户主动停止标志（close 回调据此不覆盖状态）
+ */
+const taskState = new Map();
 
-export function startTask(script, targs, label) {
-  const id = `${label}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-  const t = { id, script, args: targs, status: "running", label, startedAt: new Date().toISOString(), finishedAt: null, code: null };
-  taskState.set(id, t);
+/** 并发域队列：queueName → taskId[]（队头 running，其余 queued） */
+const queues = { build: [], writing: [] };
+
+/** 最近任务结束时刻（心跳宽限期用） */
+export let taskFinishedAt = null;
+
+/* ================= [task] 进度协议解析（统一解析器，服务所有任务类型） =================
+ * 业务脚本阶段变化时输出一行：console.log(`[task] ${JSON.stringify({...})}`)
+ *   { stage: "sentence|shots|derive|aggregate|vector|done", done?, total?, phase?, error? }
+ * 普通日志照旧进日志文件；[task] 行同时进日志（留痕）但不作为显示文本。
+ */
+function parseTaskLine(line, t) {
+  const m = line.match(/^\[task\]\s+(.*)$/);
+  if (!m) return;
+  try {
+    const d = JSON.parse(m[1]);
+    if (!d || typeof d !== "object") return;
+    if (typeof d.stage === "string") t.stage = d.stage;
+    if (typeof d.phase === "string") t.phase = d.phase;
+    if (d.done != null || d.total != null) {
+      t.progress = t.progress ?? {};
+      if (d.done != null) t.progress.done = Number(d.done);
+      if (d.total != null) t.progress.total = Number(d.total);
+    }
+    if (d.error) t.error = typeof d.error === "string" ? { message: d.error } : d.error;
+    if (d.summary) t.summary = d.summary;
+  } catch { /* 协议行解析失败忽略（普通日志行误匹配不致命） */ }
+}
+
+/* ================= 启动 / 队列 ================= */
+
+/**
+ * 启动任务（注册表驱动）：(kind, body)
+ * @returns {{taskId:string, queued:boolean, position:number}}
+ */
+export function startTask(kind, body) {
+  const reg = TASK_KINDS[kind];
+  if (!reg) throw new NovelyError("ARG_INVALID", { context: { field: "kind", value: kind } });
+  const args = reg.argsOf(body ?? {});
+  const id = `${kind}-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+  const t = {
+    id, kind, script: reg.script, args, label: kind,
+    name: reg.name(body ?? {}),
+    status: "queued",           // 默认排队；队列空时立即转 running
+    startedAt: new Date().toISOString(), finishedAt: null, code: null,
+    stage: null, phase: null, progress: null, summary: null, error: null,
+  };
+  taskState.set(id, { t, child: null, killed: false });
+  persistTask(t);
+  const queue = queues[reg.queue];
+  queue.push(id);
+  pumpQueue(reg.queue);
+  return { taskId: id, queued: t.status === "queued", position: queue.length };
+}
+
+/** 唤醒队列：域内无 running 且队头等待 → spawn */
+function pumpQueue(queueName) {
+  const queue = queues[queueName];
+  if (!queue?.length) return;
+  if (queue.some((id) => taskState.get(id)?.t.status === "running")) return;
+  const nextId = queue.find((id) => taskState.get(id)?.t.status === "queued");
+  if (!nextId) return;
+  const rec = taskState.get(nextId);
+  rec.t.status = "running";
+  persistTask(rec.t);
+  spawnTask(nextId);
+}
+
+/** 真正 spawn 子进程（仅 running 状态调用） */
+function spawnTask(id) {
+  const rec = taskState.get(id);
+  const { t } = rec;
   // SEA 单文件：无真实子进程脚本 → spawn exe 自身（sea-main 按 NOVELYWRITE_RUN 环境变量分发）
-  const cwd = isSeaRuntime ? DATA_ROOT : CODE_ROOT; // pkg 下 CODE_ROOT 是 snapshot 虚拟路径，spawn cwd 必须真实
-  const [cmd, cmdArgs, cmdEnv] = runScriptArgs(script, targs);
+  const cwd = isSeaRuntime ? DATA_ROOT : CODE_ROOT;
+  const [cmd, cmdArgs, cmdEnv] = runScriptArgs(t.script, t.args);
   const child = isSeaRuntime
     ? spawn(cmd, cmdArgs, { cwd, env: cmdEnv })
-    : spawn(NODE, [path.join(CODE_ROOT, script), ...targs], { cwd: CODE_ROOT, env: process.env });
-  // 日志流 → 独立 log 文件夹（store/_tasks/log/<id>.log，appendTaskLog 内部截断 LOG_KEEP 行）
-  // 同时实时解析进度（annotate: 第X章完成/共N章/阶段行）→ 维护 t.progress（内存+持久化，不依赖日志截断）
+    : spawn(NODE, [path.join(CODE_ROOT, t.script), ...t.args], { cwd: CODE_ROOT, env: process.env });
+  rec.child = child;
+  rec.killed = false;
+  // 日志流 → 独立 log 文件夹 + [task] 协议解析
   let buf = "";
-  const parseProgress = (line) => {
-    if (script !== "novelread/host-exec.mjs") return;
-    const p = t.progress ?? {};
-    // 范围/总数：优先子进程权威行"本次任务 N 章待处理"（--all/--from/--chapter/--pending 通用）；缺失时按 args 推断兜底
-    const todoM = line.match(/本次任务\s*(\d+)\s*章待处理/);
-    if (todoM) {
-      p.total = Number(todoM[1]);
-    } else {
-      // 范围/总数：--from/--to 或 --all
-      const argVal = (n) => { const a = targs.find((x) => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : null; };
-      if (argVal("from")) {
-        const from = Number(argVal("from"));
-        const to = argVal("to") ? Number(argVal("to")) : null;
-        const totalM = line.match(/共\s*(\d+)\s*章/);
-        if (totalM) p.total = to ? (to - from + 1) : (Number(totalM[1]) - from + 1);
-      } else if (targs.includes("--all")) {
-        const totalM = line.match(/共\s*(\d+)\s*章/);
-        if (totalM) p.total = Number(totalM[1]);
-      } else if (argVal("chapter")) {
-        p.total = String(argVal("chapter")).split(",").filter(Boolean).length;
-      }
-    }
-    // 完成章 / 阶段（done = 本次任务范围内已完成章数；"第X章完成"每章至多输出一次 → 计数即完成数）
-    const doneM = line.match(/第(\d+)章完成/);
-    if (doneM) {
-      p.currentChapter = Number(doneM[1]);
-      p.done = (p.done ?? 0) + 1;
-    } else if (line.includes("往返1")) {
-      p.stage = "往返1:句子";
-    } else if (line.includes("往返2")) {
-      p.stage = "往返2:分镜+章节";
-    } else if (line.includes("批末自动补跑增量聚合") || line.includes("触发向量增量构建")) {
-      p.stage = "批末派生";
-    } else if (line.includes("全部完成")) {
-      p.stage = "完成";
-    }
-    // 有进度信息才写（防高频无意义写盘）
-    if (p.total || p.done || p.stage) {
-      t.progress = p;
-      persistTask(t);
-    }
-  };
   const push = (chunk) => {
     buf += chunk;
     const lines = buf.split("\n");
     buf = lines.pop() ?? "";
     const clean = lines.filter((l) => l.trim());
-    if (clean.length) {
-      appendTaskLog(id, clean);
-      for (const l of clean) parseProgress(l);
+    if (!clean.length) return;
+    appendTaskLog(t.id, clean);
+    let dirty = false;
+    for (const l of clean) {
+      const before = JSON.stringify(t.progress ?? null) + t.stage + t.phase;
+      parseTaskLine(l, t);
+      if (JSON.stringify(t.progress ?? null) + t.stage + t.phase !== before) dirty = true;
+    }
+    // progress 写盘节流：有变化才写，且 ≥500ms 合并（防高频小写）
+    if (dirty) {
+      const now = Date.now();
+      if (!rec._lastPersist || now - rec._lastPersist >= 500) {
+        rec._lastPersist = now;
+        persistTask(t);
+      }
     }
   };
   child.stdout.on("data", push);
   child.stderr.on("data", push);
-  child.on("error", (err) => { t.status = "failed"; t.finishedAt = new Date().toISOString(); t.code = -1; t.error = err.message; taskFinishedAt = Date.now(); persistTask(t); });
-  child.on("close", (code) => { t.status = code === 0 ? "success" : "failed"; t.finishedAt = new Date().toISOString(); t.code = code; taskFinishedAt = Date.now(); persistTask(t); });
+  child.on("error", (err) => {
+    t.status = "failed"; t.finishedAt = new Date().toISOString(); t.code = -1;
+    t.error = { message: err.message }; taskFinishedAt = Date.now();
+    persistTask(t);
+  });
+  child.on("close", (code) => {
+    if (rec.killed) {
+      t.status = "killed"; // 用户主动停止：close 不覆盖
+      t.error = t.error ?? { message: "任务已被用户停止" };
+    } else {
+      t.status = code === 0 ? "success" : "failed";
+      if (code !== 0 && !t.error) {
+        // 业务失败无结构化 error → 从日志尾部提取最后错误行兜底（排除 [task] 协议行）
+        const tail = loadTaskLog(t.id).slice(-8).filter((l) => !l.startsWith("[task]"));
+        const errLine = [...tail].reverse().find((l) => /失败|✗|❌|error|Error|异常|拒绝/i.test(l));
+        t.error = errLine ? { message: errLine.slice(0, 160) } : { message: `进程退出码 ${code}` };
+      }
+    }
+    t.finishedAt = new Date().toISOString();
+    t.code = code;
+    if (!t.kind) t.kind = kindOfScript(t.script) ?? t.kind; // 兜底（旧字段缺失）
+    // summary：建库任务由 server 推导（todo − done = missing；成功/失败/部分成功都生成）
+    if (t.kind === "annotate" && !t.summary) {
+      const st = annotateRangeState(t.args ?? []);
+      if (st) t.summary = st.reason
+        ? { ok: st.todo.length, failed: [], pending: 0, note: st.reason }
+        : { ok: st.todo.length - st.missing.length, failed: st.missing, pending: st.missing.length };
+    }
+    taskFinishedAt = Date.now();
+    persistTask(t);
+    taskState.delete(id);
+    // 队列：出队 + 唤醒下一个
+    const queue = queues[TASK_KINDS[t.kind]?.queue];
+    if (queue) { const i = queue.indexOf(id); if (i >= 0) queue.splice(i, 1); }
+    pumpQueue(TASK_KINDS[t.kind]?.queue);
+  });
   persistTask(t);
-  return id;
 }
 
 export function listTasks() {
@@ -103,30 +180,99 @@ export function listTasks() {
   const byId = new Map();
   for (const t of listTasksFromDisk()) byId.set(t.id, t);
   for (const [id, t] of taskState) {
-    if (!byId.has(id) || t.status === "running") byId.set(id, t);
+    if (!byId.has(id) || t.status === "running" || t.status === "queued") byId.set(id, t);
+  }
+  // 兼容层：旧任务（无 kind/name，只有 script/label）按 script 反查注册表补全
+  for (const t of byId.values()) {
+    if (!t.kind) {
+      const k = kindOfScript(t.script);
+      if (k) t.kind = k;
+    }
+    if (!t.name && t.kind) {
+      const reg = TASK_KINDS[t.kind];
+      try { t.name = reg.name(bodyFromArgs(t.args ?? [])); } catch { /* 生成失败忽略 */ }
+    }
+    if (t.label && !t.name && t.kind) t.name = t.label; // 兜底
   }
   return [...byId.values()].sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""));
 }
 
-/* ================= 任务重跑（失败/被杀 → 智能续跑） =================
- * annotate：从原任务参数推导本次范围(todo) − 已标注章(章节/目录) = 缺失章 → --chapter=缺失
- *           只补缺章，不重标已成功章（省 LLM）；无缺章 → rerun:false + 原因
- * 其他任务（aggregate/fix/AI 链）：原参数重跑（聚合/fix 增量幂等；AI 链重新生成）
- */
+/* ================= 停止（kill 真杀） ================= */
+export function killTask(id) {
+  const rec = taskState.get(id);
+  const t = rec ? rec.t : listTasks().find((x) => x.id === id);
+  if (!t) return { ok: true }; // 兼容：不存在视为已结束
+  if (t.status === "queued") {
+    // 排队任务：直接出队标记 killed（无子进程可杀）
+    const queue = queues[TASK_KINDS[t.kind]?.queue];
+    if (queue) { const i = queue.indexOf(id); if (i >= 0) queue.splice(i, 1); }
+    t.status = "killed"; t.finishedAt = new Date().toISOString(); t.error = t.error ?? { message: "排队中已取消" };
+    persistTask(t);
+    taskState.delete(id);
+    pumpQueue(TASK_KINDS[t.kind]?.queue);
+    return { ok: true };
+  }
+  if (t.status === "running" && rec) {
+    rec.killed = true; // close 回调据此不覆盖
+    t.status = "killed";
+    t.finishedAt = new Date().toISOString();
+    t.error = t.error ?? { message: "任务已被用户停止" };
+    persistTask(t);
+    try { rec.child?.kill(); } catch { /* 杀失败不阻塞 */ }
+    return { ok: true };
+  }
+  // 已结束任务：幂等标记
+  if (t.status === "running") { t.status = "killed"; t.finishedAt = new Date().toISOString(); persistTask(t); }
+  return { ok: true };
+}
+
+/* ================= 重跑 / stale（建库智能续跑） ================= */
 export function apiTaskRerun(id) {
   const t = listTasks().find((x) => x.id === id);
   if (!t) throw new NovelyError("NOT_FOUND", { context: { id, kind: "task" } });
-  if (t.status === "running") throw new NovelyError("ARG_INVALID", { context: { id, rule: "任务仍在运行，不能重跑" } });
-  const args = t.args ?? [];
-  if (t.script === "novelread/host-exec.mjs") {
-    const smart = smartRerunAnnotate(args);
+  if (t.status === "running" || t.status === "queued") throw new NovelyError("ARG_INVALID", { context: { id, rule: "任务仍在运行/排队，不能重跑" } });
+  const kind = t.kind ?? kindOfScript(t.script);
+  const reg = TASK_KINDS[kind];
+  if (!reg) throw new NovelyError("ARG_INVALID", { context: { id, rule: "未知任务类型" } });
+  if (reg.rerun === "smart") {
+    const smart = smartRerunAnnotate(t.args ?? []);
     if (smart) return smart; // { rerun:true, taskId, mode } | { rerun:false, reason }
   }
-  const taskId = startTask(t.script, args, t.label);
+  const { taskId } = startTask(kind, bodyFromArgs(t.args ?? [], reg));
   return { rerun: true, taskId, mode: "原参数重跑" };
 }
 
-/** annotate 智能续跑：todo − 已标注 → 缺失章；无法推导范围/清单缺失 → null（调用方走原参数重跑） */
+/** CLI 参数反解为 body（原参数重跑用——注册表 argsOf 的逆过程，近似即可） */
+function bodyFromArgs(args) {
+  const argVal = (n) => { const a = args.find((x) => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : null; };
+  const body = {};
+  const project = argVal("corpus") ?? args.find((a) => !a.startsWith("--"));
+  if (project) body.project = project;
+  if (args.includes("--all")) body.all = true;
+  if (args.includes("--pending")) body.pending = true;
+  const chapter = argVal("chapter");
+  if (chapter) body.chapter = chapter;
+  const from = argVal("from");
+  if (from) { body.from = Number(from); const to = argVal("to"); if (to) body.to = Number(to); }
+  const domain = argVal("domain");
+  if (domain) body.domain = domain;
+  const session = argVal("session");
+  if (session) body.session = session;
+  const input = argVal("input");
+  if (input) body.input = input;
+  const projectArg = argVal("project");
+  if (projectArg) body.projects = projectArg.split(",");
+  const topk = argVal("topk");
+  if (topk) body.topk = Number(topk);
+  if (args.includes("--full")) body.full = true;
+  if (args.includes("--finalize-only")) body.finalizeOnly = true;
+  if (args.includes("--aggregates")) body.aggregates = true;
+  if (args.includes("--dry-run")) body.dryRun = true;
+  const limit = argVal("limit");
+  if (limit) body.limit = Number(limit);
+  return body;
+}
+
 /**
  * annotate 任务范围状态：todo（原任务应标章）− done（已标注章）= missing（缺章）
  * @returns {null|{corpus, domain, todo:number[], done:Set<number>, missing:number[], reason?:string}}
@@ -189,8 +335,8 @@ function smartRerunAnnotate(args) {
   const st = annotateRangeState(args);
   if (!st) return null; // 无法推导 → 调用方原参数重跑
   if (st.reason) return { rerun: false, reason: st.reason };
-  const newArgs = [`--corpus=${st.corpus}`, `--domain=${st.domain}`, `--chapter=${st.missing.join(",")}`];
-  const taskId = startTask("novelread/host-exec.mjs", newArgs, "annotate");
+  const body = { project: st.corpus, domain: st.domain, chapter: st.missing.join(",") };
+  const { taskId } = startTask("annotate", body);
   return { rerun: true, taskId, mode: `智能续跑：补 ${st.missing.length} 章（${st.missing.join(",")}）`, missing: st.missing };
 }
 
@@ -198,105 +344,30 @@ function smartRerunAnnotate(args) {
 export function apiTaskStale(id) {
   const t = listTasks().find((x) => x.id === id);
   if (!t) throw new NovelyError("NOT_FOUND", { context: { id, kind: "task" } });
-  if (t.script !== "novelread/host-exec.mjs") return { stale: false, reason: "仅建库任务可判断" };
+  if ((t.kind ?? kindOfScript(t.script)) !== "annotate") return { stale: false, reason: "仅建库任务可判断" };
   const st = annotateRangeState(t.args ?? []);
   if (!st) return { stale: false, reason: "无法推导任务范围（清单缺失）" };
   if (st.reason) return { stale: true, reason: st.reason, done: st.todo.length };
   return { stale: false, reason: `缺 ${st.missing.length} 章（${st.missing.slice(0, 10).join(",")}${st.missing.length > 10 ? "…" : ""}）`, missing: st.missing };
 }
 
-/** 任务参数装配（前端 body → 脚本 CLI 参数） */
-export function taskArgsFor(kind, b) {
-  const a = [];
-  switch (kind) {
-    case "annotate":
-      if (!b?.project) throw new NovelyError("ARG_REQUIRED", { context: { field: "project" } });
-      a.push(`--corpus=${b.project}`, `--domain=${b.domain ?? DOMAIN.EX}`);
-      if (b.all) a.push("--all");
-      else if (b.chapter) a.push(`--chapter=${String(b.chapter).trim()}`); // 逗号列表单参数（host-exec 内部分 split）
-      else if (b.pending) a.push("--pending"); // 补建指令：只补 pending 缺章
-      else if (b.from) {
-        a.push(`--from=${Number(b.from)}`); // 从第 N 章起
-        if (b.to) a.push(`--to=${Number(b.to)}`); // 续建终点（默认到末尾）
-      }
-      else throw new NovelyError("ARG_REQUIRED", { context: { field: "all|chapter|from" } });
-      break;
-    case "aggregate":
-      if (!b?.project) throw new NovelyError("ARG_REQUIRED", { context: { field: "project" } });
-      a.push(b.project);
-      if (b.full) a.push("--full");
-      if (b.finalizeOnly) a.push("--finalize-only");
-      break;
-    case "fix":
-      if (!b?.project) throw new NovelyError("ARG_REQUIRED", { context: { field: "project" } });
-      a.push(b.project);
-      if (b.aggregates) { a.push("--aggregates"); if (b.dryRun) a.push("--dry-run"); }
-      else if (b.chapter) { a.push(String(b.chapter)); if (b.limit) a.push(`--limit=${b.limit}`); if (b.dryRun) a.push("--dry-run"); }
-      else throw new NovelyError("ARG_REQUIRED", { context: { field: "chapter|aggregates" } });
-      break;
-    case "preprocess":
-      if (!b?.input) throw new NovelyError("ARG_REQUIRED", { context: { field: "input" } });
-      a.push(`--input=${b.input}`);
-      if (b.session) a.push(`--session=${b.session}`);
-      break;
-    case "recall":
-      if (!b?.session) throw new NovelyError("ARG_REQUIRED", { context: { field: "session" } });
-      a.push(`--session=${b.session}`);
-      // 参考源选择：body.projects（数组，多书）或 body.project（单书兼容）→ --project=A,B
-      {
-        const sel = Array.isArray(b.projects)
-          ? b.projects.filter((x) => typeof x === "string" && x.trim())
-          : (b.project ? [String(b.project)] : []);
-        if (sel.length) a.push(`--project=${sel.join(",")}`);
-      }
-      if (b.topk) a.push(`--topk=${b.topk}`);
-      break;
-    case "writedraft":
-      if (!b?.session) throw new NovelyError("ARG_REQUIRED", { context: { field: "session" } });
-      a.push(`--session=${b.session}`);
-      // 参考源选择与 recall 一致（writedraft 消费 recalls.json，参数仅记录）
-      {
-        const sel = Array.isArray(b.projects)
-          ? b.projects.filter((x) => typeof x === "string" && x.trim())
-          : (b.project ? [String(b.project)] : []);
-        if (sel.length) a.push(`--project=${sel.join(",")}`);
-      }
-      break;
-  }
-  return a;
-}
-
-/* ================= 任务停止（kill） =================
- * 注意：当前实现只改状态字段，不真杀子进程——已知问题，见 task/ISSUES.md P0-1。
- */
-export function killTask(id) {
-  // 内存任务（真子进程）；磁盘遗留 running 任务（服务器重启后僵尸态）也一并标记 killed
-  const t = taskState.get(id) ?? listTasks().find((x) => x.id === id);
-  if (t && t.status === "running") { t.status = "killed"; t.finishedAt = new Date().toISOString(); persistTask(t); }
-  return { ok: true };
-}
-
-/** 是否有任务正在运行（内存态；含 SEA 子进程）——心跳保护用 */
+/** 是否有任务正在运行/排队（内存态）——心跳保护用 */
 export function hasRunningTask() {
-  for (const t of taskState.values()) {
-    if (t.status === "running") return true;
+  for (const [id, rec] of taskState) {
+    if (rec.t.status === "running" || rec.t.status === "queued") return true;
   }
   return false;
 }
 
-/** 最近任务结束时刻（心跳宽限期用；由 startTask 的 close/error 回调维护） */
-export let taskFinishedAt = null;
-
 /** 启动清理：僵尸任务标记 + stale 任务记录删除（server main 启动时调用一次） */
 export function cleanupOnStart() {
-  // 启动时清理僵尸任务：磁盘遗留的 running 任务 = 上一次 server 已退出、子进程已终止
-  //（本进程新起，无任何子进程存活）→ 标记 killed，避免前端任务栏永久「进行中」
+  // 启动时清理僵尸任务：磁盘遗留的 running/queued 任务 = 上一次 server 已退出、子进程已终止
   let cleaned = 0;
   for (const t of listTasks()) {
-    if (t.status === "running") {
+    if (t.status === "running" || t.status === "queued") {
       t.status = "killed";
       t.finishedAt = new Date().toISOString();
-      t.error = t.error ?? "服务器重启，任务进程已终止";
+      t.error = t.error ?? { message: "服务器重启，任务进程已终止" };
       persistTask(t);
       cleaned++;
     }
@@ -307,7 +378,7 @@ export function cleanupOnStart() {
   let purged = 0;
   const tdir = path.join(storeDir, "_tasks");
   for (const t of listTasks()) {
-    if (!(t.status === "failed" || t.status === "killed") || t.script !== "novelread/host-exec.mjs") continue;
+    if (!(t.status === "failed" || t.status === "killed") || (t.kind ?? kindOfScript(t.script)) !== "annotate") continue;
     try {
       const st = annotateRangeState(t.args ?? []);
       if (st?.reason) { // 无缺章 = 已补齐

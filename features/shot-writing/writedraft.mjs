@@ -243,6 +243,8 @@ function fixSplitDialogue(text) {
 /* ================= 主流程（SEA 分发调用 export main） ================= */
 export async function main() {
   initWritedraft(); // 惰性初始化（参数/recalls/配置）
+  const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`); // [task] 进度协议（task/manager.mjs 解析）
+  taskLine({ stage: "write", phase: "逐镜写作" });
   const useProfile = args.includes("--profile"); // 风格指纹（默认关闭）
   // 风格指纹（--profile 开启；顶层 await 移入 main，避免模块顶层 await 阻碍 CJS 打包）
   let styleProfile = "";
@@ -372,6 +374,7 @@ if (testMode) {
 
 /* ========== 阶段② 全文整合（draft + 章纲 → 最终稿，最小改动整合） ========== */
 console.log("\n[writedraft] 阶段② 全文整合（draft.txt + 原始章纲 → 完整章节，最小改动衔接）...");
+taskLine({ stage: "write", phase: "全文整合" });
 const MERGE_SYSTEM = `你是编辑。把一组带标签的分镜文本整合为一个连贯章节。
 
 【硬约束】
@@ -407,6 +410,7 @@ console.log(`   中间产物: ${sessionsDir}/${sessionId}/${draftName}（带标�
 console.log(`   最终稿:   output/${sessionId}/${finalName}（纯正文，用户可读）`);
 console.log(`\n=== 最终稿预览 ===`);
 console.log(finalOut.slice(0, 600) + (finalOut.length > 600 ? "\n…" : ""));
+taskLine({ stage: "done", phase: `成稿完成（${finalOut.length} 字符）` });
 }
 
 // 直接运行（源码 CLI / SEA 分发调用 export main）

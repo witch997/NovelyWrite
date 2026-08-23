@@ -49,6 +49,8 @@ function parseArgs() {
 /* ================= 主流程 ================= */
 export async function main() {
   parseArgs(); // 惰性解析 CLI 参数（SEA 分发时 main 无参）
+  const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`); // [task] 进度协议（task/manager.mjs 解析）
+  taskLine({ stage: "recall", phase: "召回参考" });
   // 参考源：--project 支持逗号分隔多书 / 多次传入；解析为数组（空 = 全库）
   const rawProjects = [];
   for (const a of args) {
@@ -136,6 +138,7 @@ const recallsJson = {
 };
 fs.writeFileSync(path.join(sessionDir, "recalls.json"), JSON.stringify(recallsJson, null, 2) + "\n", "utf-8");
 console.log(`\n✅ recalls.json 已生成: ${sessionsDir}/${sessionId}/recalls.json（${recalls.length} 镜，含完整 shots + refs）`);
+taskLine({ stage: "done", phase: `召回完成（${recalls.length} 镜）` });
 }
 
 // 直接运行（源码 CLI / SEA 分发调用 export main）

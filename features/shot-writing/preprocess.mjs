@@ -104,6 +104,8 @@ function ts() {
 /* ---------- 主流程 ---------- */
 export async function main() {
   parseArgs(); // 惰性解析 CLI 参数（SEA 分发时 main 无参）
+  const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`); // [task] 进度协议（task/manager.mjs 解析）
+  taskLine({ stage: "preprocess", phase: "用户输入→分镜序列" });
   console.log(`[preprocess] 用户输入（${input.length} 字符）: ${input.slice(0, 60)}${input.length > 60 ? "…" : ""}`);
 
   // 检测用户是否已自带内容分块逻辑：
@@ -190,6 +192,7 @@ export async function main() {
     console.log(`  [${s.seq}] ${s.type} ${JSON.stringify(s.funcs ?? [])}「${s.label ?? ""}」 ${(s.content ?? "").slice(0, 50)}${(s.content ?? "").length > 50 ? "…" : ""}`);
   }
   console.log(`\n[preprocess] 完成。后续：recall（召回参考）→ write（写作）→ draft 复制到 output/`);
+  taskLine({ stage: "done", phase: `分镜完成（${shots.length} 镜）` });
 }
 
 // 直接运行（源码 CLI / SEA 分发调用 export main）

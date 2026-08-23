@@ -69,6 +69,9 @@ function push(rel, loc, problem, current, context) {
 
 export async function main() {
   parseArgs(); // 惰性解析 CLI 参数
+  // [task] 进度协议行（task/manager.mjs 统一解析；同时进日志留痕）
+  const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`);
+  taskLine({ stage: "fix", phase: aggregatesMode ? "聚合层字段修复" : `章节字段修复（${chapterArg ?? ""}）` });
 /* ---------- 聚合层字段级检测（--aggregates 模式：event.json / 卷纲.json 的枚举/类型） ---------- */
 const aggIssues = [];
 if (aggregatesMode) {
@@ -325,6 +328,7 @@ async function finalizeChapter() {
   }
   console.log(`\n✅ 修复动作已留痕：project-meta.json 的 verifiedAt/contractIssues 已刷新`);
   console.log(chapterOk ? "✅ 章级复检通过" : "⚠ 章级复检仍有问题——请查看上方 ✗ 项定位具体原因（如句子切分、分镜归属、枚举混淆），对症处理");
+  taskLine({ stage: "done", phase: chapterOk ? "修复完成" : "修复完成（仍有问题）" });
   process.exit(chapterOk ? 0 : 1);
 }
 
@@ -401,6 +405,7 @@ async function finalizeChapter() {
       console.log((e.stdout ?? "").toString().trim());
     }
     console.log(`\n✅ 聚合层字段级修复完成（project-meta.json 已刷新）`);
+    taskLine({ stage: "done", phase: "聚合层修复完成" });
     process.exit(0);
   }
 

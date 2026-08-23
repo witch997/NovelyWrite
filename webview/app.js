@@ -105,8 +105,9 @@
       this.el.classList.toggle("minimized", this.minimized);
       this.toggle.textContent = this.minimized ? "+" : "–";
     },
-    /** 渲染任务名（annotate→「建库」,aggregate→「聚合」,preprocess/recall/writedraft→AI 链阶段） */
+    /** 渲染任务名（优先 server 生成的 name；旧任务无 name 时按类型/参数回退拼） */
     labelOf(t) {
+      if (t.name) return t.name; // server 注册表生成（TASK_KINDS.name）
       const map = {
         annotate: "📚 建库", aggregate: "🧩 聚合", fix: "🔧 修复",
         preprocess: "🎬 分镜", recall: "🔍 召回", writedraft: "✍️ 成稿",
@@ -123,50 +124,8 @@
       const clean = arg.replace(/^《|》$/g, "");
       return `${base}《${clean}》`;
     },
-    /** 从日志提取进度: annotate → 完成章/总数；聚合/AI → 阶段百分比
-     *  taskArgs: 任务参数（用于算本次范围 todo 章数做分母，而非语料总章数） */
-    progressFrom(log, taskArgs = []) {
-      if (!log?.length) return null;
-      const text = log.join("\n");
-      // annotate: 第X章完成；分母 = 本次任务范围 todo 章数（--from/--to/--all/--chapter）
-      const doneM = [...text.matchAll(/第(\d+)章完成/g)].map((m) => Number(m[1]));
-      if (doneM.length) {
-        const argVal = (n) => { const a = taskArgs.find((x) => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : null; };
-        let total = null;
-        let inRange = null; // 范围内完成章数（避免日志累积了其他任务的完成记录）
-        if (taskArgs.includes("--all")) {
-          const totalM = text.match(/共\s*(\d+)\s*章/);
-          if (totalM) total = Number(totalM[1]);
-          inRange = doneM.length;
-        } else if (argVal("from")) {
-          const from = Number(argVal("from"));
-          const to = argVal("to") ? Number(argVal("to")) : null;
-          const totalM = text.match(/共\s*(\d+)\s*章/);
-          const corpusTotal = totalM ? Number(totalM[1]) : null;
-          if (corpusTotal) total = to ? (to - from + 1) : (corpusTotal - from + 1);
-          inRange = doneM.filter((n) => n >= from && (!to || n <= to)).length;
-        } else if (argVal("chapter")) {
-          const chs = String(argVal("chapter")).split(",").map(Number).filter(Boolean);
-          total = chs.length;
-          inRange = doneM.filter((n) => chs.includes(n)).length;
-        } else if (taskArgs.includes("--pending")) {
-          total = doneM.length || null;
-          inRange = doneM.length;
-        }
-        if (total && inRange != null) {
-          return { done: Math.max(...doneM), total, pct: Math.round((inRange / total) * 100) };
-        }
-      }
-      // annotate: 熔断/全部完成 → 100%
-      if (/全部完成|已开始建库/.test(text)) return { done: null, total: null, pct: 99 };
-      // 聚合: 新增章 N 个
-      const incM = text.match(/新增章\s*(\d+)\s*个/);
-      if (incM) return { done: null, total: null, pct: 50 };
-      // AI 链: 阶段行 → 粗略百分比
-      if (/聚合层②|往返2|召回参考|正在写作/.test(text)) return { done: null, total: null, pct: 40 };
-      if (/往返1/.test(text)) return { done: null, total: null, pct: 20 };
-      return null;
-    },
+    /** 旧任务（无 progress 字段）回退：无进度数据（启发式解析已移除——见 task/ISSUES.md P0-2） */
+    progressFrom() { return null; },
     /** 从日志尾部取最近状态行（只扫尾部 SCAN 行——历史错误行不霸屏，恢复后立即显示新进度） */
     lastLogLine(log, scan = 8) {
       if (!log?.length) return { text: "", kind: "" };
@@ -181,17 +140,17 @@
     async poll() {
       try {
         const { tasks } = await api("/api/tasks");
-        const running = tasks.filter((t) => t.status === "running");
+        const active = tasks.filter((t) => t.status === "running" || t.status === "queued");
         const ids = new Set(tasks.map((t) => t.id));
         // 清理已从服务端消失的卡（非失败驻留的）
         for (const [id, card] of this.cards) {
           if (!ids.has(id) && !card.failed) this.removeCard(id);
         }
-        for (const t of running) {
+        for (const t of active) {
           this.ensureCard(t);
-          this.updateRunning(t); // 刷新进度条 + 最新日志行（不 await，独立请求）
+          this.updateRunning(t); // 刷新进度条 + 状态文字（不 await，独立请求）
         }
-        for (const t of tasks.filter((x) => x.status !== "running")) {
+        for (const t of tasks.filter((x) => x.status !== "running" && x.status !== "queued")) {
           const card = this.cards.get(t.id);
           if (card && !card.failed && card.status !== t.status) await this.finishCard(t, card);
         }
@@ -218,75 +177,83 @@
     ensureCard(t) {
       if (this.cards.has(t.id)) return;
       const el = document.createElement("div");
-      el.className = "task-card running";
+      el.className = "task-card " + (t.status === "queued" ? "queued" : "running");
       el.innerHTML = `
         <div class="task-card-head">
           <span class="task-card-name">${escapeHtml(this.labelOf(t))}</span>
-          <span class="task-card-status running">⏳ 进行中</span>
+          <span class="task-card-status running">${t.status === "queued" ? "⏳ 排队中" : "⏳ 进行中"}</span>
         </div>
         <div class="task-card-bar"><div class="task-card-bar-fill" style="width:5%"></div></div>
         <div class="task-card-log"></div>
         <div class="task-card-actions">
-          <button class="btn btn-sm" data-act="kill" title="中止任务">停止</button>
+          <button class="btn btn-sm" data-act="kill" title="中止/取消任务">${t.status === "queued" ? "取消" : "停止"}</button>
         </div>`;
       this.body.appendChild(el);
       el.querySelector("[data-act=kill]").onclick = async () => {
-        try { await api(`/api/tasks/${t.id}/kill`, { method: "POST" }); toast(`已请求中止: ${this.labelOf(t)}`); }
+        try { await api(`/api/tasks/${t.id}/kill`, { method: "POST" }); toast(t.status === "queued" ? `已取消排队: ${this.labelOf(t)}` : `已请求中止: ${this.labelOf(t)}`); }
         catch (e) { toast(`中止失败: ${e.message}`); }
       };
-      this.cards.set(t.id, { el, name: this.labelOf(t), status: "running", logEl: el.querySelector(".task-card-log"), barEl: el.querySelector(".task-card-bar-fill"), failed: false });
+      this.cards.set(t.id, { el, name: this.labelOf(t), status: t.status === "queued" ? "queued" : "running", logEl: el.querySelector(".task-card-log"), barEl: el.querySelector(".task-card-bar-fill"), failed: false });
       this.el.classList.add("visible");
     },
-    /** 更新运行中卡片（进度条 + 日志行）；进度优先读 server 的 progress 状态字段（不依赖日志截断） */
+    /** 更新运行中/排队卡片（进度条 + 状态文字）；进度读 server 结构化字段（progress/phase），不解析日志 */
     async updateRunning(t) {
       const card = this.cards.get(t.id);
-      if (!card || card.status !== "running") return;
+      if (!card || (card.status !== "running" && card.status !== "queued")) return;
       try {
         const [detail, { log }] = await Promise.all([
           api(`/api/tasks/${t.id}`).catch(() => null),
           api(`/api/tasks/${t.id}/log`).catch(() => ({ log: [] })),
         ]);
-        // 进度：server 状态字段（done/total/stage）优先；旧任务无 progress 字段时回退日志解析
-        let pct = null;
+        if (t.status === "queued" || detail?.status === "queued") {
+          // 排队中：显示排队状态（进度条保持，状态文字说明）
+          card.logEl.textContent = "⏳ 排队中（同类型任务进行中，自动等待）";
+          card.logEl.className = "task-card-log";
+          return;
+        }
+        // 进度：server progress 字段（done/total）；旧任务无字段则无进度条（不猜）
         const pr = detail?.progress;
         if (pr && pr.total) {
-          pct = Math.round(((pr.done ?? 0) / pr.total) * 100);
-        } else {
-          const prog = this.progressFrom(log, detail?.args ?? []);
-          if (prog?.pct != null) pct = prog.pct;
+          card.barEl.style.width = `${Math.min(Math.round((pr.done ?? 0) / pr.total * 100), 99)}%`;
         }
-        if (pct != null) card.barEl.style.width = `${Math.min(pct, 99)}%`;
-        // 状态文字：运行中优先显示 server 实时进度（stage · 已完成章/总章），
-        // 最近日志有错误/警告时附加 ⚠ 提示（历史错误行不覆盖实时状态）
+        // 状态文字：优先 server phase（当前阶段描述）；其次日志尾部（含错误）
         const line = this.lastLogLine(log);
-        let text = line.text, kind = line.kind;
-        if (pr?.stage) {
-          text = pr.stage;
-          if (pr.total) text += ` · ${pr.done ?? 0}/${pr.total} 章`;
-          if (line.kind) text += ` ⚠ ${line.text.slice(0, 36)}`; // 附最近错误/警告摘要
-          kind = line.kind === "error" ? "error" : "warn";
-        }
+        let text = detail?.phase ?? line.text, kind = line.kind;
+        if (pr?.total && detail?.phase) text += ` · ${pr.done ?? 0}/${pr.total}`;
+        if (line.kind && detail?.phase) text += ` ⚠ ${line.text.slice(0, 36)}`; // 附最近错误/警告摘要
         if (text) {
           card.logEl.textContent = text;
           card.logEl.className = "task-card-log" + (kind ? ` ${kind}` : "");
         }
-      } catch { /* 日志拉取失败忽略 */ }
+      } catch { /* 拉取失败忽略 */ }
     },
     /** 任务结束：成功→绿+短暂展示后收起；失败/被杀→红+驻留（stale 已补齐→绿+收起） */
     async finishCard(t, card) {
       const ok = t.status === "success";
       const killed = t.status === "killed";
       card.status = t.status;
+      const partial = !ok && t.summary && t.summary.ok > 0 && t.summary.pending > 0; // 部分成功
       card.failed = !ok;
       card.el.classList.remove("running");
-      card.el.classList.add(ok ? "success" : "failed");
+      card.el.classList.add(ok || partial ? "success" : "failed");
       const st = card.el.querySelector(".task-card-status");
-      st.textContent = ok ? "✅ 完成" : killed ? "⏹ 已停止" : "❌ 失败";
-      st.className = "task-card-status " + (ok ? "success" : "failed");
+      st.textContent = ok ? "✅ 完成" : killed ? "⏹ 已停止" : partial ? "⚠ 部分完成" : "❌ 失败";
+      st.className = "task-card-status " + (ok || partial ? "success" : "failed");
       card.barEl.style.width = ok ? "100%" : "100%";
       const act = card.el.querySelector(".task-card-actions");
       if (act) act.remove();
-      // 失败/被杀 → 拉一次日志显示错误行 + 驻留（可手动关闭 / 重跑）
+      // 结束摘要：部分成功显示"X/Y 成功，缺章"；成功显示 summary.note（如有）
+      if (t.summary) {
+        const s = t.summary;
+        if (partial) {
+          card.logEl.textContent = `⚠ ${s.ok}/${s.ok + s.pending} 章成功，缺第${(s.failed ?? []).join("、")}章`;
+          card.logEl.className = "task-card-log warn";
+        } else if (ok && s.note) {
+          card.logEl.textContent = s.note;
+          card.logEl.className = "task-card-log";
+        }
+      }
+      // 失败/被杀 → 显示结构化 error（优先）或日志错误行 + 驻留（可手动关闭 / 重跑）
       if (!ok) {
         // 先查 stale：该任务使命已完成（缺章已被其他任务补齐）→ 显示✅已补齐后自动收起，不红卡驻留
         if (t.script === "novelread/host-exec.mjs") {
@@ -303,13 +270,19 @@
             }
           } catch { /* 查不到按需重跑处理 */ }
         }
-        (async () => {
-          try {
-            const { log } = await api(`/api/tasks/${t.id}/log`);
-            const line = this.lastLogLine(log);
-            if (line.text) { card.logEl.textContent = line.text; card.logEl.className = "task-card-log error"; }
-          } catch { /* ignore */ }
-        })();
+        if (t.error?.message && !partial) {
+          // 结构化 error（server 维护）优先——不再从日志正则抠
+          card.logEl.textContent = t.error.message.slice(0, 160);
+          card.logEl.className = "task-card-log error";
+        } else if (!t.error?.message) {
+          (async () => {
+            try {
+              const { log } = await api(`/api/tasks/${t.id}/log`);
+              const line = this.lastLogLine(log);
+              if (line.text) { card.logEl.textContent = line.text; card.logEl.className = "task-card-log error"; }
+            } catch { /* ignore */ }
+          })();
+        }
         this.done.push({ id: t.id, el: card.el });
         // 失败卡片提供 重跑（仅 annotate）+ 关闭
         const actRow = document.createElement("div");

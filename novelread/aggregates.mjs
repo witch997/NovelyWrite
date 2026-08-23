@@ -246,6 +246,7 @@ async function semanticEvent(summaries, summariesText, opts = {}) {
   const outRel = opts.outRel ?? "大事件/event.json";
   const isTemp = outRel.includes("temp");
   console.log(`\n========== 聚合层② 语义调用① ${isTemp ? "temp（新增章）" : "event.json"}（${summaries.length} 章 summary） ==========`);
+  taskLine({ stage: "aggregate", phase: "聚合层② 语义:大事件" });
   const skill = loadSkillSlice("event");
   // temp 模式（增量）：prompt 明确「只喂新增章」，降低 temp 语义失真（开始章/state 仅代表新增章视角）
   const userMsg = [
@@ -313,6 +314,7 @@ async function semanticVolume(summaries, summariesText, opts = {}) {
   const outRel = opts.outRel ?? "卷纲/volume.json";
   const isTemp = outRel.includes("temp");
   console.log(`\n========== 聚合层③ 语义调用② ${isTemp ? "temp（新增章）" : "volume.json"}（仅 summary；targets.isMain 由脚本派生） ==========`);
+  taskLine({ stage: "aggregate", phase: "聚合层③ 语义:卷纲" });
   const skill = loadSkillSlice("volume");
   // temp 模式（增量）：prompt 明确「只喂新增章」，降低 temp 语义失真（state 仅代表新增章视角）
   const userMsg = [
@@ -569,6 +571,7 @@ function finalizeIncremental(newChapters) {
 /** ④ 终检：全项目语法门 + 契约计数 + 统计 + project-meta.json */
 export function finalizePart(projectDir, project) {
   console.log(`\n========== 聚合层④ 终检 + 头文档：${project} ==========`);
+  taskLine({ stage: "aggregate", phase: "聚合层④ 终检+索引" });
   // 语法门（严格，跳过 temp 文件与增量状态文件——中间产物不参与正式文件校验）
   const jsonFiles = (() => {
     const out = [];
@@ -639,6 +642,9 @@ export function finalizePart(projectDir, project) {
 export async function main() {
   parseArgs(); // 惰性解析 CLI 参数（SEA 分发时 main 无参，参数来自 cliArgs 过滤后的 process.argv）
   if (!fs.existsSync(projectDir)) { console.error(`project 不存在: ${projectDir}`); process.exit(2); }
+  // [task] 进度协议行（task/manager.mjs 统一解析；同时进日志留痕）
+  const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`);
+  taskLine({ stage: "aggregate", phase: "聚合层① 确定性重算" });
 
   if (flags.includes("--emit-summaries")) { emitSummaries(projectDir); process.exit(0); }
   if (flags.includes("--deterministic-only")) { deterministicPart(projectDir, project); process.exit(0); }
@@ -729,6 +735,7 @@ export async function main() {
   } catch (err) { console.warn(`  [索引] 向量更新异常（不阻塞）: ${err.message.slice(0, 80)}`); }
 
   console.log("\n✅ 阶段二完成：聚合层 + 终检通过 + 索引已更新（project-meta.json 已更新）");
+  taskLine({ stage: "done", phase: "聚合完成" });
 }
 
 // 直接运行（源码 CLI / SEA 分发调用 export main）——被 import 时仅当直接运行才执行

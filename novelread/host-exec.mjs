@@ -319,6 +319,9 @@ export async function main(argv = cliArgs()) {
   if (!todo.length) throw new Error(`没有要处理的章: ${pendingOnly ? `pending 无未完成章（可 --all 全量）` : chapters ? chapters.join(",") : fromN ? `从${fromN}章起${toN ? `到${toN}章` : ""}` : "all"}`);
   // 本次任务待处理章数（server 端解析为进度 total；--all/--from/--chapter/--pending 通用）
   console.log(`[host] 本次任务 ${todo.length} 章待处理（${doAll ? "全量" : pendingOnly ? "补建 pending" : chapters ? `指定 ${chapters.join(",")}` : fromN ? `从${fromN}章起${toN ? `到${toN}章` : "到末尾"}` : "未知范围"}）`);
+  // [task] 进度协议行（task/manager.mjs 统一解析；同时进日志留痕）
+  const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`);
+  taskLine({ stage: "sentence", total: todo.length, done: 0, phase: "准备" });
   // 建库范围提示：全量/大批次开销大，推荐分批（每次 ≤30 章）
   if (doAll) console.log(`\n⚠ 全量建库（${todo.length} 章）——一次开销较大（LLM token），如非必要建议分批续建（每次 ≤30 章）\n`);
   else if (todo.length > 30) console.log(`\n⚠ 本次建库 ${todo.length} 章，超过推荐单批上限（30 章）——建议分批以控制开销\n`);
@@ -400,6 +403,7 @@ export async function main(argv = cliArgs()) {
 
     /* ===== 往返1：句子（硬闸门 A） ===== */
     console.log("\n---------- 往返1：句子层 ----------");
+    taskLine({ stage: "sentence", phase: `往返1:句子（第${ch.number}章）` });
     const userA = [
       "## 本次输入",
       `- 本次往返：**往返1（句子层）**——只输出 句子标注/json/第XXXX章.json 一个文件`,
@@ -437,6 +441,7 @@ export async function main(argv = cliArgs()) {
 
     /* ===== 往返2：分镜 + 章节（硬闸门 B） ===== */
     console.log("\n---------- 往返2：分镜层 + 章节层 ----------");
+    taskLine({ stage: "shots", phase: `往返2:分镜+章节（第${ch.number}章）` });
     const userB = [
       "## 本次输入",
       `- 本次往返：**往返2（分镜层+章节层）**——只输出 分镜标注/json/第XXXX章.json + 章节/第XXXX章.json 两个文件`,
@@ -544,11 +549,13 @@ export async function main(argv = cliArgs()) {
     } else {
       okCount++; // 成功章计数（批末自动聚合：至少 1 章成功才跑）
       clearPending(ch); // 成功 → 从 pending 移除
+      taskLine({ stage: "sentence", done: okCount, phase: `第${ch.number}章完成（${okCount}/${todo.length}）` });
     }
   }
 
   console.log("\n[host] 全部完成。产出文件：");
   for (const f of walkProject(PROJECT_DIR)) console.log("  " + f);
+  taskLine({ stage: "aggregate", done: okCount, phase: "批末派生（聚合/索引）" });
 
   if (chapterIssues.length) {
     console.log(`\n⚠ 检测发现 ${chapterIssues.length} 项问题（不阻塞，建议处理后重跑对应章）：`);
@@ -613,9 +620,11 @@ export async function main(argv = cliArgs()) {
   // 避免"补跑后仍缺章"却被显示为成功——缺章以红卡驻留提示，直到补齐）
   if (failedCh > 0) {
     console.log(`\n❌ 本批 ${failedCh} 章失败（已记录 pending.json）。任务标记为失败——可用补建指令重跑缺章，或等下次任务自动续跑。`);
+    taskLine({ stage: "done", done: okCount, phase: `完成：${okCount} 成功 / ${failedCh} 失败`, error: `本批 ${failedCh} 章失败（已记录 pending.json，可用补建指令重跑）` });
     process.exitCode = 1;
   } else {
     console.log("\n✅ 本批全部成功。");
+    taskLine({ stage: "done", done: okCount, phase: `完成：${okCount}/${todo.length} 章全部成功` });
   }
 }
 

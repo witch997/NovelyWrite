@@ -353,8 +353,11 @@ body {
 }
 .task-card-status { font-size: 11.5px; white-space: nowrap; flex-shrink: 0; }
 .task-card-status.running { color: var(--accent, #3b82f6); }
+.task-card-status.queued  { color: #d97706; }
 .task-card-status.success { color: var(--green-500, #22c55e); }
 .task-card-status.failed  { color: #ef4444; }
+.task-card.queued { opacity: 0.85; }
+.task-card.queued .task-card-bar-fill { background: #d97706; }
 .task-card-bar {
   height: 5px; border-radius: 3px; background: var(--border);
   overflow: hidden; margin: 4px 0 6px;

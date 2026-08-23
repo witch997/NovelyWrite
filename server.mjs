@@ -55,7 +55,7 @@ import { retrieve } from "./retriever/retriever.mjs";
 import { NovelyError, report } from "./shared/errors.mjs";
 import { loadTaskLog } from "./shared/tasks.mjs";
 // 任务管理（已抽为独立模块 task/manager.mjs——生命周期/进度/重跑/stale/清理，行为零改动）
-import { startTask, listTasks, apiTaskRerun, apiTaskStale, taskArgsFor, killTask, hasRunningTask, taskFinishedAt, cleanupOnStart } from "./task/manager.mjs";
+import { startTask, listTasks, apiTaskRerun, apiTaskStale, killTask, hasRunningTask, taskFinishedAt, cleanupOnStart } from "./task/manager.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -599,14 +599,14 @@ async function apiImportBook(body) {
       child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(errMsg.trim() || `gen-chapter-list 退出码 ${code}`))));
     });
   }
-  // 3. 启动建库任务
+  // 3. 启动建库任务（注册表驱动：startTask(kind, body)）
   const from = Number(body.from);
   const to = Number(body.to);
   const taskArgs = { project: base, domain };
   if (body.pending) taskArgs.pending = true; // 补建指令：只补 pending 缺章
   else if (from > 0) { taskArgs.from = from; if (to > 0) taskArgs.to = to; } // 续建范围
   else taskArgs.all = true;
-  const taskId = startTask("novelread/host-exec.mjs", taskArgsFor("annotate", taskArgs), "annotate");
+  const { taskId } = startTask("annotate", taskArgs);
   const modeDesc = body.pending ? "补建缺章" : from > 0 ? `从第${from}章续建${to > 0 ? `到第${to}章` : "到末尾"}` : "全量";
   return { ok: true, name: base, domain, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: modeDesc };
 }
@@ -634,18 +634,18 @@ const ROUTES = [
   { m: "POST", p: /^\/api\/system\/heartbeat$/, h: () => apiHeartbeat() },
   { m: "GET", p: /^\/api\/sessions$/, h: () => apiSessions() },
   { m: "GET", p: /^\/api\/sessions\/([^/]+)$/, h: (m) => apiSessionDetail(decodeURIComponent(m[1])) },
-  { m: "GET", p: /^\/api\/tasks$/, h: () => ({ tasks: listTasks().map((t) => ({ id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, progress: t.progress ?? null })) }) },
-  { m: "GET", p: /^\/api\/tasks\/([^/]+)$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, label: t.label, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, args: t.args, progress: t.progress ?? null }; } },
+  { m: "GET", p: /^\/api\/tasks$/, h: () => ({ tasks: listTasks().map((t) => ({ id: t.id, kind: t.kind ?? null, label: t.label, name: t.name ?? null, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, progress: t.progress ?? null, phase: t.phase ?? null, error: t.error ?? null, summary: t.summary ?? null })) }) },
+  { m: "GET", p: /^\/api\/tasks\/([^/]+)$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, kind: t.kind ?? null, label: t.label, name: t.name ?? null, script: t.script, status: t.status, startedAt: t.startedAt, finishedAt: t.finishedAt, code: t.code, args: t.args, progress: t.progress ?? null, phase: t.phase ?? null, error: t.error ?? null, summary: t.summary ?? null }; } },
   { m: "GET", p: /^\/api\/tasks\/([^/]+)\/log$/, h: (m) => { const t = listTasks().find((x) => x.id === m[1]); if (!t) throw new NovelyError("NOT_FOUND", { context: { id: m[1], kind: "task" } }); return { id: t.id, status: t.status, log: loadTaskLog(t.id) }; } },
   { m: "POST", p: /^\/api\/tasks\/([^/]+)\/kill$/, h: (m) => killTask(m[1]) },
   { m: "POST", p: /^\/api\/tasks\/([^/]+)\/rerun$/, h: (m) => apiTaskRerun(m[1]) },
   { m: "GET", p: /^\/api\/tasks\/([^/]+)\/stale$/, h: (m) => apiTaskStale(m[1]) },
-  { m: "POST", p: /^\/api\/tasks\/annotate$/, h: (_m, b) => ({ taskId: startTask("novelread/host-exec.mjs", taskArgsFor("annotate", b), "annotate") }) },
-  { m: "POST", p: /^\/api\/tasks\/aggregate$/, h: (_m, b) => ({ taskId: startTask("novelread/aggregates.mjs", taskArgsFor("aggregate", b), "aggregate") }) },
-  { m: "POST", p: /^\/api\/tasks\/fix$/, h: (_m, b) => ({ taskId: startTask("novelread/fix.mjs", taskArgsFor("fix", b), "fix") }) },
-  { m: "POST", p: /^\/api\/tasks\/preprocess$/, h: (_m, b) => ({ taskId: startTask("features/shot-writing/preprocess.mjs", taskArgsFor("preprocess", b), "preprocess") }) },
-  { m: "POST", p: /^\/api\/tasks\/recall$/, h: (_m, b) => ({ taskId: startTask("features/shot-writing/recall.mjs", taskArgsFor("recall", b), "recall") }) },
-  { m: "POST", p: /^\/api\/tasks\/writedraft$/, h: (_m, b) => ({ taskId: startTask("features/shot-writing/writedraft.mjs", taskArgsFor("writedraft", b), "writedraft") }) },
+  { m: "POST", p: /^\/api\/tasks\/annotate$/, h: (_m, b) => startTask("annotate", b) },
+  { m: "POST", p: /^\/api\/tasks\/aggregate$/, h: (_m, b) => startTask("aggregate", b) },
+  { m: "POST", p: /^\/api\/tasks\/fix$/, h: (_m, b) => startTask("fix", b) },
+  { m: "POST", p: /^\/api\/tasks\/preprocess$/, h: (_m, b) => startTask("preprocess", b) },
+  { m: "POST", p: /^\/api\/tasks\/recall$/, h: (_m, b) => startTask("recall", b) },
+  { m: "POST", p: /^\/api\/tasks\/writedraft$/, h: (_m, b) => startTask("writedraft", b) },
   { m: "GET", p: /^\/api\/sessions\/([^/]+)\/final$/, h: (m) => apiSessionFinal(decodeURIComponent(m[1])) },
   { m: "POST", p: /^\/api\/tasks\/import-book$/, h: (_m, b) => apiImportBook(b) },
 ];

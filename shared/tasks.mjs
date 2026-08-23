@@ -55,7 +55,9 @@ export function persistTask(t) {
     fs.mkdirSync(TASKS_DIR, { recursive: true });
     const payload = {
       id: t.id,
+      kind: t.kind ?? null,       // 任务类型（注册表 kind；旧任务为 null，读取时按 script 反查）
       label: t.label,
+      name: t.name ?? null,       // 展示名（server 注册表生成）
       script: t.script,
       args: t.args ?? [],
       status: t.status,
@@ -64,6 +66,8 @@ export function persistTask(t) {
       code: t.code,
       error: t.error ?? null,
       progress: t.progress ?? null, // 实时进度（done/total/stage/currentChapter，覆盖写不累积）
+      phase: t.phase ?? null,       // 当前阶段描述（[task] 协议）
+      summary: t.summary ?? null,   // 结束摘要（部分成功可表达）
       logFile: `log/${t.id}.log`, // 日志位置引用（独立 log 文件夹）
     };
     const tmp = `${taskPath(t.id)}.tmp`;
@@ -73,9 +77,8 @@ export function persistTask(t) {
 }
 
 /**
- * 追加日志行到独立 log 文件夹（<id>.log；超过 LOG_KEEP 行截断保留尾部）
- * @param {string} id 任务 id
- * @param {string[]} lines 日志行数组
+ * 追加日志行到独立 log 文件夹（<id>.log；追加模式，超阈值才惰性截断）
+ * 优化（P1-3）：不再每批读全量→过滤→重写；改为纯 append，仅在文件过大时截断一次。
  */
 export function appendTaskLog(id, lines) {
   try {
@@ -87,10 +90,16 @@ export function appendTaskLog(id, lines) {
       fs.writeFileSync(p, text, "utf-8");
       return;
     }
-    // 追加 + 行数截断（读全量 → 尾部截断 → 重写；LOG_KEEP 行上限，任务日志规模可控）
-    const existing = fs.readFileSync(p, "utf-8").split("\n");
-    const merged = [...existing, ...lines].filter((l) => l.trim() !== "").slice(-LOG_KEEP);
-    fs.writeFileSync(p, merged.join("\n") + "\n", "utf-8");
+    // 追加（append 模式，无读全量重写）
+    fs.appendFileSync(p, text, "utf-8");
+    // 惰性截断：文件超 256KB 才读全量截尾（低频，避免每批 O(n)）
+    if (fs.statSync(p).size > 256 * 1024) {
+      const existing = fs.readFileSync(p, "utf-8").split("\n");
+      if (existing.length > LOG_KEEP * 2) {
+        const trimmed = existing.filter((l) => l.trim() !== "").slice(-LOG_KEEP);
+        fs.writeFileSync(p, trimmed.join("\n") + "\n", "utf-8");
+      }
+    }
   } catch { /* 日志写失败不阻塞主流程 */ }
 }
 
