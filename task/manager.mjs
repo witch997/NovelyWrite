@@ -219,6 +219,24 @@ export function killTask(id) {
     t.error = t.error ?? { message: "任务已被用户停止" };
     persistTask(t);
     try { rec.child?.kill(); } catch { /* 杀失败不阻塞 */ }
+    // B1：子进程可能卡在同步等待（LLM timeoutMs=null 挂起）不响应 SIGTERM →
+    // 超时兜底 SIGKILL + 手动收尾（防 close 永不触发导致队列卡死）
+    const pid = rec.child?.pid;
+    if (pid) {
+      setTimeout(() => {
+        const cur = taskState.get(id);
+        if (!cur || !cur.killed) return; // 已正常 close 收尾
+        try { process.kill(pid, "SIGKILL"); } catch { /* 进程已死 */ }
+        // 强制收尾：出队 + 唤醒队列（防队列永久卡死）
+        t.finishedAt = new Date().toISOString();
+        persistTask(t);
+        taskState.delete(id);
+        const queue = queues[TASK_KINDS[t.kind]?.queue];
+        if (queue) { const i = queue.indexOf(id); if (i >= 0) queue.splice(i, 1); }
+        pumpQueue(TASK_KINDS[t.kind]?.queue);
+        console.log(`[task] 任务 ${id} 强杀完成（SIGTERM 超时 5s，SIGKILL 兜底）`);
+      }, 5000);
+    }
     return { ok: true };
   }
   // 已结束任务：幂等标记

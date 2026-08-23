@@ -614,17 +614,17 @@ export async function main(argv = cliArgs()) {
     }
     console.log(`  [删除] 第${chNum}章 标注已归档（聚合剔除由批末 aggregates 处理）`);
   };
-  /** 本次任务写入指纹的章号（B1：聚合失败时回滚，下次检测仍视为改动） */
-  const fingerprintWritten = new Set();
+  /** 本次任务写入指纹的章（B2：聚合失败时回滚——存旧值恢复，不误删已有指纹） */
+  const fingerprintWritten = new Map(); // ch → 旧指纹（null=原本无指纹）
   const updateFingerprint = (ch) => {
     if (domain !== DOMAIN.MY) return; // 指纹仅 my 域
     const cur = readFingerprints(PROJECT_DIR);
     // 从当前 md 重算该章 hash（最新原稿 = 标注所依据的版本；标注成功后写入）
     try {
       const md = fs.readFileSync(path.join(mybookDir, corpusName, `第${String(ch.number).padStart(4, "0")}章.md`), "utf-8");
+      if (!fingerprintWritten.has(ch.number)) fingerprintWritten.set(ch.number, cur[ch.number] ?? null); // 记录旧值
       cur[ch.number] = chapterHash(md);
       writeFingerprints(PROJECT_DIR, cur);
-      fingerprintWritten.add(ch.number); // 记录本次写入（B1：聚合失败时回滚）
       console.log(`  [指纹] 第${ch.number}章 指纹已更新`);
     } catch { /* md 不存在（deleted 场景）→ 不更新 */ }
   };
@@ -731,13 +731,17 @@ export async function main(argv = cliArgs()) {
     } catch (e) {
       console.log((e.stdout ?? "").toString().slice(-600) || `[聚合✗] ${e.message}`);
       console.log("  [聚合] 本次聚合未完成（不阻塞）。可用补建指令后的下次任务自动续跑，或手动: node cli.mjs aggregate <书>");
-      // B1：聚合失败 → 回滚本次写入的指纹（标注数据保留，但指纹回退 → 下次检测仍视为改动，聚合会重跑）
+      // B2：聚合失败 → 回滚本次写入的指纹（标注数据保留，但指纹回退 → 下次检测仍视为改动，聚合会重跑；
+      // 恢复旧值而非删除——不误删该章原本就有的指纹，下次检测精确判定为 changed）
       if (domain === DOMAIN.MY && fingerprintWritten.size) {
         try {
           const cur = readFingerprints(PROJECT_DIR);
           let rolled = 0;
-          for (const n of fingerprintWritten) { if (n in cur) { delete cur[n]; rolled++; } }
-          if (rolled) { writeFingerprints(PROJECT_DIR, cur); console.log(`  [指纹回滚] 聚合失败，回滚 ${rolled} 章指纹（下次检测将重走变更流程）`); }
+          for (const [chNum, oldHash] of fingerprintWritten) {
+            if (oldHash === null) { if (chNum in cur) { delete cur[chNum]; rolled++; } }
+            else if (cur[chNum] !== oldHash) { cur[chNum] = oldHash; rolled++; }
+          }
+          if (rolled) { writeFingerprints(PROJECT_DIR, cur); console.log(`  [指纹回滚] 聚合失败，恢复 ${rolled} 章旧指纹（下次检测仍视为改动）`); }
         } catch { /* 回滚失败忽略 */ }
       }
     }
