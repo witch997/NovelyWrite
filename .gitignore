@@ -10,6 +10,8 @@ mybook/
 novelread/state/
 sessions/
 features/shot-writing/sessions/
+# 根目录用户生成的分析文档（卷纲/事件表等导出，不提交）
+/天之炽-卷纲与事件表.md
 
 # ===== 打包产物 =====
 dist/
