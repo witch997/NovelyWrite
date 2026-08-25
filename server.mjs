@@ -57,6 +57,7 @@ import { loadTaskLog } from "./shared/tasks.mjs";
 // 任务管理（已抽为独立模块 task/manager.mjs——生命周期/进度/重跑/stale/清理，行为零改动）
 import { startTask, listTasks, apiTaskRerun, apiTaskStale, killTask, hasRunningTask, taskFinishedAt, cleanupOnStart } from "./task/manager.mjs";
 import { scanBookFingerprints, diffFingerprints, readFingerprints } from "./task/fingerprint.mjs";
+import { decodeTextBuffer, checkTextHealthy } from "./shared/encoding.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -534,6 +535,9 @@ function synthCorpusFromMybook(base) {
   for (const f of files) {
     const num = Number(f.match(/^第(\d{4})章\.md$/)[1]);
     let text = fs.readFileSync(path.join(dir, f), "utf-8").replace(/\r\n/g, "\n").replace(/^\uFEFF/, "");
+    // mybook 原稿体检：手动放入的 GBK md 会读出 �，拒绝入库防脏数据
+    const h = checkTextHealthy(text, `mybook/${base}/${f}`);
+    if (!h.ok) throw new NovelyError("ARG_INVALID", { context: { field: "chapter", value: f, reason: h.error } });
     const titleLine = text.split("\n")[0] ?? "";
     const tm = titleLine.match(/^#\s+(.+)/);
     const title = tm ? tm[1].trim() : "";
@@ -583,20 +587,34 @@ async function apiImportBook(body) {
     }
     synthCorpusFromMybook(base);
   } else {
-    // 外部书：上传语料 txt → 保存 → 自动生成章节清单
+    // 外部书：上传语料 txt → 编码检测（UTF-8/GBK 强制转换）→ 保存 → 自动生成章节清单
     const filename = (body?.filename ?? "").trim();
     const content = body?.content;
-    if (!filename || typeof content !== "string" || !content.trim()) {
+    if (!filename || (typeof content !== "string" && !body?.contentB64) || (typeof content === "string" && !content.trim())) {
       throw new NovelyError("ARG_REQUIRED", { context: { field: "filename|content" } });
     }
     base = filename.replace(/\.txt$/i, "").replace(/-语料$/, "").trim();
     if (!base || !CORPUS_NAME_RE.test(base)) {
       throw new NovelyError("ARG_INVALID", { context: { field: "filename", value: filename, rule: "仅中文/字母/数字等，去 .txt 后缀" } });
     }
-    // 1. 保存语料
+    // 1. 编码检测 + 强制转换：优先原始字节（contentB64，前端 FileReader 传），
+    //    旧版字符串 content 兼容（已按 UTF-8 解码过，仅做乱码体检）
+    let corpusText, encNote;
+    if (typeof body?.contentB64 === "string" && body.contentB64) {
+      const r = decodeTextBuffer(Buffer.from(body.contentB64, "base64"));
+      if (!r.ok) throw new NovelyError("ARG_INVALID", { context: { field: "content", reason: r.error } });
+      corpusText = r.text;
+      encNote = r.converted ? r.note : null;
+    } else {
+      const h = checkTextHealthy(content, "上传语料");
+      if (!h.ok) throw new NovelyError("ARG_INVALID", { context: { field: "content", reason: h.error } });
+      corpusText = content;
+      encNote = null; // 字符串路径无法溯源编码（前端已解码），不再猜测
+    }
     fs.mkdirSync(corpusDir, { recursive: true });
     const corpusPath = path.join(corpusDir, `${base}-语料.txt`);
-    fs.writeFileSync(corpusPath, content, "utf-8");
+    fs.writeFileSync(corpusPath, corpusText, "utf-8");
+    if (encNote) console.log(`[import-book] ${base}: ${encNote}（${corpusText.length} 字符）`);
     // 2. 自动生成章节清单（spawn，等待完成；失败时透出 gen-chapter-list 的具体原因）
     await new Promise((resolve, reject) => {
       const [cmd, cmdArgs, cmdEnv] = runScriptArgs("novelread/gen-chapter-list.mjs", [base]); // SEA: exe run 自身
@@ -627,7 +645,7 @@ async function apiImportBook(body) {
   if (changeInfo?.deleted?.length) modeParts.push(`剔除第${changeInfo.deleted.join(",")}章`);
   if (changeInfo?.newChs?.length) modeParts.push(`新增第${changeInfo.newChs.join(",")}章`);
   const modeDesc = body.pending ? "补建缺章" : from > 0 ? `从第${from}章续建${to > 0 ? `到第${to}章` : "到末尾"}` : modeParts.length ? modeParts.join(" + ") : "全量";
-  return { ok: true, name: base, domain, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: modeDesc, change: changeInfo };
+  return { ok: true, name: base, domain, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, taskId, mode: modeDesc, change: changeInfo, encoding: encNote ?? null };
 }
 
 /* ================= 路由 ================= */

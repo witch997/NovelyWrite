@@ -907,7 +907,23 @@
       String(defEnd)
     );
     if (endStr === null) return; // 取消
-    const body = { filename: file.name, content: await file.text() };
+    // 读原始字节（base64）而非 file.text()：file.text() 强制按 UTF-8 解码，
+    // GBK/GB2312 语料会当场损坏成 �（不可逆）。原始字节交由服务端检测编码并转换。
+    let contentB64 = "";
+    try {
+      const ab = await file.arrayBuffer();
+      const bytes = new Uint8Array(ab);
+      const CHUNK = 0x8000;
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+      }
+      contentB64 = btoa(bin);
+    } catch (err) {
+      toast(`读取文件失败: ${err.message}`);
+      return;
+    }
+    const body = { filename: file.name, contentB64 };
     const s = String(endStr).trim().toLowerCase();
     if (s === "p") {
       body.pending = true; // 补建指令
@@ -923,7 +939,7 @@
     try {
       const r = await api("/api/tasks/import-book", { method: "POST", body: JSON.stringify(body) });
       const modeDesc = body.pending ? "补建缺章" : body.to ? `续建第${body.from}~${body.to}章` : r.mode;
-      toast(`✅ 已开始建库《${r.name}》（${modeDesc}）`);
+      toast(`✅ 已开始建库《${r.name}》（${modeDesc}）${r.encoding ? `｜${r.encoding}` : ""}`);
       await loadRefPool(); // 刷新参考书池
     } catch (err) {
       toast(`导入失败: ${err.message}`);
