@@ -164,7 +164,7 @@ function apiConfigGet() {
 /** 配置：写 features 段 / 全局字段（apiKey/baseUrl 允许——建库/写作可独立 API） */
 function apiConfigPut(body) {
   const raw = loadRawConfig() ?? {};
-  const FIELDS = ["apiKey", "baseUrl", "model", "temperature", "maxTokens", "timeoutMs", "maxRetries"];
+  const FIELDS = ["apiKey", "baseUrl", "model", "temperature", "maxTokens", "timeoutMs", "maxRetries", "decode"];
   const pick = (o) => Object.fromEntries(FIELDS.filter((k) => o?.[k] !== undefined && o[k] !== null && o[k] !== "").map((k) => [k, o[k]]));
 
   // 全局 chat / embed 字段

@@ -76,7 +76,7 @@ function applyEnvOverrides(cfg) {
  */
 export function loadChatConfig(moduleName, featureDir) {
   // 模块作用域允许字段（apiKey/baseUrl 也允许——写作/建库独立 API）
-  const MODULE_FIELDS = ["apiKey", "baseUrl", "model", "temperature", "maxTokens", "timeoutMs", "maxRetries", "shotLen"];
+  const MODULE_FIELDS = ["apiKey", "baseUrl", "model", "temperature", "maxTokens", "timeoutMs", "maxRetries", "shotLen", "decode"];
   const pickModuleFields = (o) => Object.fromEntries(MODULE_FIELDS.filter((k) => o?.[k] !== undefined).map((k) => [k, o[k]]));
 
   // ① 全局 config.json + 环境变量覆盖
@@ -110,6 +110,7 @@ export function loadChatConfig(moduleName, featureDir) {
     timeoutMs: cfg.chat.timeoutMs ?? 300000,
     maxRetries: cfg.chat.maxRetries ?? 3,
     shotLen: cfg.chat.shotLen ?? null,
+    decode: cfg.chat.decode ?? null,
     moduleName: moduleName ?? null,
   };
 }

@@ -43,7 +43,7 @@ import { statsToJson, decodeParamsFromStats } from "./style-stats.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sessionsDir = writingSessionDir; // 数据根 sessions/（SEA 只读区不可写）
 
-let args, sessionId, project, outputDir, sessionDir, recalls, shots, outline, chatCfg, baseUrl, shotLenConfig, lenTargetText, fixDialogue; // 惰性初始化（被 import 时不可有副作用）
+let args, sessionId, project, outputDir, sessionDir, recalls, shots, outline, chatCfg, baseUrl, shotLenConfig, lenTargetText, fixDialogue, decodeCfg; // 惰性初始化（被 import 时不可有副作用）
 
 /* ---------- 初始化（延迟到 main——被 sea-main import 时无参数，不能 exit/读文件） ---------- */
 function initWritedraft() {
@@ -93,18 +93,24 @@ function initWritedraft() {
     : `约 ${shotLenConfig} 字`;
   console.log(`[writedraft] 字数基准: ${lenTargetText}（来源: ${args.some((a) => a.startsWith("--shot-len=")) ? "命令行" : typeof chatCfg.shotLen !== "undefined" ? "config shotLen" : "默认"}）`);
   fixDialogue = !args.includes("--no-fix-dialogue"); // 对话修复（脚本确定性，默认开）
+  // 解码四元组配置（跨模型兼容）：读 features.shot-writing.chat.decode（模块作用域，随写作 LLM 配置一起读入 chatCfg）
+  //   { tempRange, top_p, fpCenter, fpSlope, fpRange, presence_penalty, supports:{top_p,frequency_penalty,presence_penalty} }
+  //   supports 中某参数 = false → 该参数不支持，chat 回退 API 默认（不传）
+  decodeCfg = chatCfg.decode ?? null;
 }
 
-async function chat(messages, maxTokens = null, thinking = false, decode = null) {
+async function chat(messages, maxTokens = null, thinking = false, decode = null, decodeCfg = null) {
   // decode: { temperature?, top_p?, frequency_penalty?, presence_penalty? }——完整解码参数（可只给部分）
+  // decodeCfg: { supports?: {top_p?, frequency_penalty?, presence_penalty?}, ... }——模型参数支持声明（不支持的回退 API 默认）
+  const supports = decodeCfg?.supports ?? {};
   const body = {
     model: chatCfg.model, messages, stream: true,
   };
   if (decode?.temperature != null) body.temperature = decode.temperature;
   else body.temperature = chatCfg.temperature ?? 0.8;
-  if (decode?.top_p != null) body.top_p = decode.top_p;
-  if (decode?.frequency_penalty != null) body.frequency_penalty = decode.frequency_penalty;
-  if (decode?.presence_penalty != null) body.presence_penalty = decode.presence_penalty;
+  if (decode?.top_p != null && supports.top_p !== false) body.top_p = decode.top_p;
+  if (decode?.frequency_penalty != null && supports.frequency_penalty !== false) body.frequency_penalty = decode.frequency_penalty;
+  if (decode?.presence_penalty != null && supports.presence_penalty !== false) body.presence_penalty = decode.presence_penalty;
   // maxTokens === null → 不传 max_tokens（用 API 默认上限，不限制长度）
   if (maxTokens !== null) body.max_tokens = maxTokens;
   // thinking：默认禁用（不传 disabled）；只有显式 thinking=true 才开启
@@ -168,12 +174,26 @@ const FUNC_TEMP = {
   "收束分镜": -0.15,   // 收尾要收住
 };
 
-/** 逐镜温度（规则映射）：type 基础档 + funcs 均值调整，钳制 [TEMP_MIN, TEMP_MAX] */
-export function tempFromShot(shot, base = TEMP_BASE) {
+/**
+ * 逐镜温度（规则映射）：type 基础档 + funcs 均值调整，钳制 [TEMP_MIN, TEMP_MAX]。
+ * 跨模型适配：range = [lo, hi] 为目标模型温度范围（如 GLM [0.5, 1.0]）——
+ *   结果先在 DeepSeek 标定范围 [TEMP_MIN, TEMP_MAX] 内 clamp，再【按比例映射】到目标范围：
+ *     ratio = (v - TEMP_MIN) / (TEMP_MAX - TEMP_MIN)
+ *     newV  = lo + ratio × (hi - lo)
+ *   无 range（默认）→ 直接返回标定范围值（DeepSeek 行为不变）。
+ */
+export function tempFromShot(shot, base = TEMP_BASE, range = null) {
   const tAdj = TYPE_TEMP[shot?.type] ?? 0;
   const funcs = (shot?.funcs ?? []).map((f) => FUNC_TEMP[f]).filter((v) => v != null);
   const fAdj = funcs.length ? funcs.reduce((a, b) => a + b, 0) / funcs.length : 0;
-  return Number(Math.min(TEMP_MAX, Math.max(TEMP_MIN, base + tAdj + fAdj)).toFixed(3));
+  let v = Math.min(TEMP_MAX, Math.max(TEMP_MIN, base + tAdj + fAdj));
+  if (range && Array.isArray(range) && range.length === 2 && range[1] > range[0]) {
+    // 按比例映射：DeepSeek 标定范围 → 目标模型范围
+    const [lo, hi] = range;
+    const ratio = (v - TEMP_MIN) / (TEMP_MAX - TEMP_MIN);
+    v = lo + ratio * (hi - lo);
+  }
+  return Number(v.toFixed(3));
 }
 
 /** 全文哈希温度（整合阶段用：无 type/funcs，取整篇 draft 特征；FNV-1a 确定性） */
@@ -233,14 +253,16 @@ function styleStatsToText(st) {
  */
 function shotParams(shot, refsText, useStyle, styleMap) {
   const stats = useStyle ? styleMap.get(shot.seq) : null;
-  const decode = stats ? decodeParamsFromStats(stats) : null;
+  // decodeCfg 里 supports 是模型能力声明（chat 用），系数部分是 decodeParamsFromStats 用
+  const { supports, tempRange, ...coeffCfg } = decodeCfg ?? {};
+  const decode = stats ? decodeParamsFromStats(stats, coeffCfg) : null;
   if (decode) {
-    // temperature 由 type+funcs 规则出（decode 返回 null 表示不覆盖）；penalties 来自 refs 统计/默认
-    decode.temperature = tempFromShot(shot);
+    // temperature 由 type+funcs 规则出（decode 返回 null 表示不覆盖）；tempRange 存在时按比例映射到目标模型范围
+    decode.temperature = tempFromShot(shot, TEMP_BASE, tempRange);
   }
   return {
     styleText: stats ? styleStatsToText(stats) : "",
-    decode: decode ?? { temperature: tempFromShot(shot) },
+    decode: decode ?? { temperature: tempFromShot(shot, TEMP_BASE, tempRange) },
   };
 }
 
@@ -427,7 +449,7 @@ export async function main() {
   const raw = await chat([
     { role: "system", content: WRITE_SYSTEM },
     { role: "user", content: userMsg },
-  ], null, false, shotDecode); // 解码四元组（refs 解析，或 type+funcs 规则兜底）；thinking 禁；max_tokens 不限制
+  ], null, false, shotDecode, decodeCfg); // 解码四元组 + 模型能力声明（不支持的参数回退 API 默认）；thinking 禁
   shotBodies.push(raw.trim());
   // 调试标记（draft 内联，供调试；不单独落盘 style-profiles）
   const st = styleMap.get(shot.seq);
@@ -506,7 +528,7 @@ const mergeTemp = tempFromText(cleanDraft);
 const mergeRaw = await chat([
   { role: "system", content: MERGE_SYSTEM },
   { role: "user", content: mergeUser },
-], null, false, { temperature: mergeTemp }); // 全文整合：只调温度，其余用 API 默认；thinking 禁
+], null, false, { temperature: mergeTemp }, decodeCfg); // 全文整合：只调温度，其余用 API 默认；thinking 禁
 const finalText = mergeRaw.trim();
 console.log(`  [整合] 最终稿 ${finalText.length} 字符（temp=${mergeTemp}）`);
 // 对话拆分修复（默认开；--no-fix-dialogue 关闭）：整合完成后统一检测「"A"动作，"B"」重排为合法句式

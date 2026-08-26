@@ -1285,6 +1285,8 @@
       fillModelSelect($("setEmbedModel"), embedData, cfg?.embed?.model || "");
       fillModelSelect($("setShotModel"), writingData, cfg?.features?.["shot-writing"]?.chat?.model || "");
       $("setShotTemp").value = cfg?.features?.["shot-writing"]?.chat?.temperature ?? cfg?.chat?.temperature ?? "";
+      const dec = cfg?.features?.["shot-writing"]?.chat?.decode;
+      $("setShotDecode").value = dec ? JSON.stringify(dec, null, 2) : "";
     } catch (e) {
       toast(`读取配置失败: ${e.message}`);
     }
@@ -1330,6 +1332,18 @@
     if (shotBaseUrl) shotChat.baseUrl = shotBaseUrl;
     if (shotModel) shotChat.model = shotModel;
     if (!Number.isNaN(temp)) shotChat.temperature = temp;
+    // 解码配方（JSON 文本域）：解析失败则中断保存并提示
+    const decodeText = $("setShotDecode").value.trim();
+    if (decodeText) {
+      try {
+        const dec = JSON.parse(decodeText);
+        if (!dec || typeof dec !== "object" || Array.isArray(dec)) throw new Error("须为 JSON 对象");
+        shotChat.decode = dec;
+      } catch (e) {
+        toast(`❌ 解码配方不是合法 JSON：${e.message}`);
+        return;
+      }
+    }
     if (Object.keys(shotChat).length) body.features["shot-writing"] = { chat: shotChat };
     await api("/api/config", { method: "PUT", body: JSON.stringify(body) });
     // 自动保存间隔

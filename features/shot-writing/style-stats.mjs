@@ -181,20 +181,41 @@ export function statsToJson(text) {
  *   分布集中度(vocabEntropy) → top_p
  *   重复率(repeatRatio) → frequency_penalty
  *   新词衰减(noveltyDecay) → presence_penalty
- * 经验线性映射（系数初值，后续实测调校），全部 clamp 到 API 支持范围。
+ *
+ * 系数可配置（跨模型兼容）：不同模型对参数的敏感性不同，系数按模型标定。
+ * 默认值 = DeepSeek 标定结果；换 GLM/其他模型可在 config 覆盖。
+ *
+ * cfg 结构（全部可选，缺省用默认）：
+ *   {
+ *     tempRange: [lo, hi],          // temperature clamp 区间（GLM 建议 [0.5, 1.0]）
+ *     top_p: number|null,           // top_p 固定值；null = 不覆盖（用 API 默认）
+ *     fpCenter: number,             // frequency_penalty 中心（repeat=0 时的值）
+ *     fpSlope: number,              // frequency_penalty 斜率（repeat 每 +0.01 扣多少）
+ *     fpRange: [lo, hi],            // frequency_penalty clamp 区间
+ *     presence_penalty: number|null,// presence_penalty 固定值；null = 不覆盖
+ *   }
  */
-export function decodeParamsFromStats(st) {
+const DEFAULT_DECODE_CFG = {
+  tempRange: [0.6, 1.3],      // DeepSeek 标定（GLM 建议改为 [0.5, 1.0]）
+  top_p: 1.0,
+  fpCenter: 1.0,
+  fpSlope: 6.7,
+  fpRange: [-0.5, 1.5],
+  presence_penalty: 0.3,
+};
+
+export function decodeParamsFromStats(st, cfg = {}) {
+  const c = { ...DEFAULT_DECODE_CFG, ...cfg };
   const r = st?.raw ?? {};
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
   // temperature：回退——由 type+funcs 规则出（shotParams 侧处理，此处不推），保留占位 null 表示"不覆盖"
   const temperature = null;
-  // top_p：固定 1.0（不截断，让 temperature/fp 全权控制；vocabEntropy 饱和不可用）
-  const top_p = 1.0;
-  // frequency_penalty：重复率越高 → 惩罚越低（参考爱重复则放行）；3-gram 重复率低值域（0~0.15），
-  //                     repeat 0→0.15 映射 1.0→0.0，中心 repeat≈0.05 → fp≈0.65
-  const frequency_penalty = clamp(1.0 - (r.repeatRatio ?? 0.05) * 6.7, -0.5, 1.5);
-  // presence_penalty：固定 0.3（意象控制适中，贴孤城闭克制风——允许固定意象复用）
-  const presence_penalty = 0.3;
+  // top_p：固定值（cfg 可设 null = 用 API 默认）
+  const top_p = c.top_p;
+  // frequency_penalty：重复率越高 → 惩罚越低；系数可重标定
+  const frequency_penalty = clamp(c.fpCenter - (r.repeatRatio ?? 0.05) * c.fpSlope, c.fpRange[0], c.fpRange[1]);
+  // presence_penalty：固定值（cfg 可设 null = 用 API 默认）
+  const presence_penalty = c.presence_penalty;
   return {
     temperature, // null → 调用方回退 type+funcs 规则
     top_p,
