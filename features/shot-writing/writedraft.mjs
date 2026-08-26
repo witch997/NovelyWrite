@@ -19,8 +19,10 @@
  *   不做最终整合——阶段①分镜完成后直接拼接为最终稿（保留分镜标签）。
  *   用途：调试逐镜写作质量（排除整合环节干扰）/ 快速产出原始拼接稿。
  *
- * 风格指纹（--profile，默认关闭）：
- *   跨书召回/风格混杂场景统一基调用；同书召回下与逐镜风格观察冗余且带泄漏风险，默认跳过。
+ * 每镜风格锚点（--style，默认关闭）：
+ *   程序统计（18 维文体特征 → 语义标签）逐镜注入——形态锚点，零 LLM，确定性可校验。
+ *   （LLM 不参与风格提炼：其语义输出会使生成结果过拟合；统计只描述"文本长什么样"，不锁语义。）
+ *   不传 --style = 直接以参考文本为风格样例（默认行为）。
  *
  * 对话拆分修复（默认开；--no-fix-dialogue 关闭）：
  *   脚本检测「"A"动作，"B"」句式并重排为合法（动作前置合并），确定性零 LLM。
@@ -28,7 +30,7 @@
  * 用法：
  *   node features/shot-writing/writedraft.mjs --session <session-id> [--project <语料名>]
  *   node features/shot-writing/writedraft.mjs --session <session-id> --test-mode
- *   node features/shot-writing/writedraft.mjs --session <session-id> --profile
+ *   node features/shot-writing/writedraft.mjs --session <session-id> --style
  *   node features/shot-writing/writedraft.mjs --session <session-id> --no-fix-dialogue
  */
 import fs from "node:fs";
@@ -36,6 +38,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CODE_ROOT, DATA_ROOT, writingSessionDir, cliArgs } from "../../shared/paths.mjs";
 import { loadChatConfig } from "../../shared/config.mjs";
+import { statsToJson, decodeParamsFromStats } from "./style-stats.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const sessionsDir = writingSessionDir; // 数据根 sessions/（SEA 只读区不可写）
@@ -92,11 +95,16 @@ function initWritedraft() {
   fixDialogue = !args.includes("--no-fix-dialogue"); // 对话修复（脚本确定性，默认开）
 }
 
-async function chat(messages, maxTokens = null, thinking = false, temperature = null) {
+async function chat(messages, maxTokens = null, thinking = false, decode = null) {
+  // decode: { temperature?, top_p?, frequency_penalty?, presence_penalty? }——完整解码参数（可只给部分）
   const body = {
-    model: chatCfg.model, messages, temperature: temperature ?? chatCfg.temperature ?? 0.8,
-    stream: true,
+    model: chatCfg.model, messages, stream: true,
   };
+  if (decode?.temperature != null) body.temperature = decode.temperature;
+  else body.temperature = chatCfg.temperature ?? 0.8;
+  if (decode?.top_p != null) body.top_p = decode.top_p;
+  if (decode?.frequency_penalty != null) body.frequency_penalty = decode.frequency_penalty;
+  if (decode?.presence_penalty != null) body.presence_penalty = decode.presence_penalty;
   // maxTokens === null → 不传 max_tokens（用 API 默认上限，不限制长度）
   if (maxTokens !== null) body.max_tokens = maxTokens;
   // thinking：默认禁用（不传 disabled）；只有显式 thinking=true 才开启
@@ -128,21 +136,52 @@ async function chat(messages, maxTokens = null, thinking = false, temperature = 
   return out;
 }
 
-/* ---------- 从参考文本提炼 temperature（8 位小数） ----------
- * 原理：参考文本 = 天然的"种子"——FNV-1a 哈希(32位) → [0,1) → 映射到 [TEMP_MIN, TEMP_MAX]
- *   - 同参考 → 同 temperature（可复现）
- *   - 不同参考 → 大概率不同 temperature（多样性）
- *   - 8 位小数：几乎不重复，每镜独立发散度
- * 语义：参考文本特征决定该镜写作的发散程度（参考越分散，温度越随机）
+/* ========== 温度模块（采样层，逐镜独立；与风格模块解耦） ==========
+ * 基于镜型(type) + funcs 的规则映射（零 LLM、确定性、可解释）：
+ *   温度 = clamp(基准0.9 + type调整 + funcs调整均值, 下限0.6, 上限1.3)
+ *   - type 决定基础档（心理收敛/动作发散）
+ *   - funcs 多个取【均值】叠加（1 个全值生效；多个折中，不爆上限；负向不叠加过冷）
+ *   - 兜底：type 未知 → 仅 funcs 调整；均无 → 基准 0.9
+ * 与整合阶段 tempFromText（哈希，无 type/funcs 时兜底）并存：逐镜用规则映射，整合用哈希。
  */
-const TEMP_MIN = 0.6;   // 温度下限（较收敛）
-const TEMP_MAX = 1.3;   // 温度上限（较发散）
+const TEMP_BASE = 0.9;   // 基准温度
+const TEMP_MIN = 0.6;    // 下限（收敛）
+const TEMP_MAX = 1.3;    // 上限（发散）
+const TYPE_TEMP = {
+  "心理": -0.15,  // 内心戏要稳，收敛防跳脱
+  "信息": -0.10,  // 陈述性内容，稳
+  "环境": -0.05,  // 场景描写，平和
+  "对话": 0,      // 常规对话，基准
+  "事件": +0.05,  // 情节推进，略放开
+  "动作": +0.10,  // 动作戏要跳，发散
+};
+const FUNC_TEMP = {
+  "爆发": +0.15,   // 情绪顶点，放开
+  "反转": +0.10,   // 转折要锐
+  "悬念": +0.05,   // 留钩子，略发散
+  "塑造人物": +0.05, // 人物戏，稍活
+  "推进": +0.05,   // 动起来
+  "转场": -0.05,   // 过渡要顺
+  "引入世界观": -0.05, // 交代要清楚
+  "设置动机": -0.10,   // 铺垫性，稳
+  "铺垫": -0.10,   // 伏笔要稳
+  "收束分镜": -0.15,   // 收尾要收住
+};
+
+/** 逐镜温度（规则映射）：type 基础档 + funcs 均值调整，钳制 [TEMP_MIN, TEMP_MAX] */
+export function tempFromShot(shot, base = TEMP_BASE) {
+  const tAdj = TYPE_TEMP[shot?.type] ?? 0;
+  const funcs = (shot?.funcs ?? []).map((f) => FUNC_TEMP[f]).filter((v) => v != null);
+  const fAdj = funcs.length ? funcs.reduce((a, b) => a + b, 0) / funcs.length : 0;
+  return Number(Math.min(TEMP_MAX, Math.max(TEMP_MIN, base + tAdj + fAdj)).toFixed(3));
+}
+
+/** 全文哈希温度（整合阶段用：无 type/funcs，取整篇 draft 特征；FNV-1a 确定性） */
 const FNV_PRIME = 16777619;
 const FNV_OFFSET = 2166136261;
-
-export function tempFromRefs(refsText, min = TEMP_MIN, max = TEMP_MAX) {
+export function tempFromText(text, min = TEMP_MIN, max = TEMP_MAX) {
   let h = FNV_OFFSET;
-  const s = refsText ?? "";
+  const s = text ?? "";
   for (let i = 0; i < s.length; i++) {
     h ^= s.charCodeAt(i);
     h = Math.imul(h, FNV_PRIME);
@@ -151,28 +190,77 @@ export function tempFromRefs(refsText, min = TEMP_MIN, max = TEMP_MAX) {
   return Number((min + ratio * (max - min)).toFixed(8));
 }
 
+/* ========== 动态字数目标（方案：refs 平均长度定区间，内容承载量感知） ==========
+ * 固定字数（配置 200）的缺陷：分镜内容信息量差异大，简单镜注水、复杂镜被压缩。
+ * 改为：该镜 refs 的平均字符数 = "这类内容通常写多长" → 目标区间 [0.8×, 1.2×]，
+ *       clamp 到 [MIN, MAX] 合理范围；无 refs 时回退配置默认。
+ */
+const LEN_MIN = 100;    // 字数下限（太短写不开）
+const LEN_MAX = 600;    // 字数上限（太长失控）
+const LEN_RANGE = [0.8, 1.2]; // 区间系数（信息量弹性）
+
+/** 从该镜 refs 文本算字数目标区间；无参考返回 null（调用方回退配置） */
+export function lenTargetFromRefs(refsText, defaultText = "约 200 字") {
+  if (!refsText || refsText === "（无参考）") return null;
+  // refs 文本 = 多条拼接（"1. [label] 第X章 分镜Y…：正文"）——正文是冒号后的部分
+  const bodies = refsText.split("\n").map((l) => l.includes("：") ? l.slice(l.indexOf("：") + 1) : l).filter((x) => x.trim().length > 0);
+  if (!bodies.length) return null;
+  const avgLen = bodies.reduce((a, b) => a + b.trim().length, 0) / bodies.length;
+  const lo = Math.max(LEN_MIN, Math.round(avgLen * LEN_RANGE[0]));
+  const hi = Math.min(LEN_MAX, Math.round(avgLen * LEN_RANGE[1]));
+  if (hi <= lo) return `${Math.round(avgLen)} 字`; // 区间退化（clamp 后无跨度）→ 单值
+  return `${lo}-${hi} 字`;
+}
+
+/* ========== 每镜风格锚点（--style：纯程序统计，零 LLM） ==========
+ * 风格画像 = statsToJson 程序统计（raw 数值 + labels 语义标签）。
+ * LLM 不参与风格提炼（语义输出会过拟合生成结果）——统计只作"形态锚点"：
+ * 写作时注入 labels（描述性参考），不注入任何 LLM 语义判断。
+ */
+/** 每镜统计标签 → 提示词文本（零 LLM） */
+function styleStatsToText(st) {
+  if (!st) return "";
+  const labelLine = Object.entries(st.labels).map(([k, v]) => `${k}:${v}`).join(" | ");
+  return `【本镜统计形态（程序实测）】${labelLine}`;
+}
+
+/* ========== 逐镜写作参数（合并封装：风格锚点 + 解码四元组，同粒度一次产出） ==========
+ * 每镜一次调用，产出该镜完整写作参数：
+ *   { styleText: 形态标签文本（--style 时）| "", decode: 四元组 }
+ * 解码四元组来源（优先级）：
+ *   1. refs 统计解析（decodeParamsFromStats：temperature/top_p/penalties 全从 refs 文本推导）
+ *   2. 无 refs 或未开 --style → temperature 用 type+funcs 规则，其余用 API 默认
+ */
+function shotParams(shot, refsText, useStyle, styleMap) {
+  const stats = useStyle ? styleMap.get(shot.seq) : null;
+  const decode = stats ? decodeParamsFromStats(stats) : null;
+  if (decode) {
+    // temperature 由 type+funcs 规则出（decode 返回 null 表示不覆盖）；penalties 来自 refs 统计/默认
+    decode.temperature = tempFromShot(shot);
+  }
+  return {
+    styleText: stats ? styleStatsToText(stats) : "",
+    decode: decode ?? { temperature: tempFromShot(shot) },
+  };
+}
+
 /* ========== 阶段① 逐镜写作 + 拼接带标签 draft ========== */
-const WRITE_SYSTEM = `你是网文作者。根据【任务】写作一个分镜（镜头级片段），
-参考【写作参考】中前文类似分镜的行文节奏、互动风格和角色风格。
+const WRITE_SYSTEM = `你是网文作者。根据【任务】写作一个分镜（镜头级片段）。
 
 要求：
 - 只输出该分镜的正文，不要输出标题、注释、分析
 - 严格遵循该分镜给出的信息，可以拓展情节细节
-- 【风格跟随·最高优先级】参考文本是风格样例：句式节奏、口语化程度、叙述视角、情绪表达方式、修辞习惯（用不用比喻/煽情/长句）全部要向参考靠拢——
-  参考怎么说话，你就怎么说话；参考用什么词，你就用什么词（同一语域）；参考若含蓄留白，你就含蓄留白；参考若直白跳跃，你就直白跳跃。
+- 【风格跟随·最高优先级】写作风格以【写作参考】文本的实际写法为准——句式/用词/节奏/口语化/修辞/情绪表达全部向参考靠拢，参考怎么写你就怎么写；
+  【本镜统计形态】（--style 时）是程序对参考文本形态的摘要，帮助你更快把握参考的风格——以参考原文的实际读感为准，标签只是提示，不要脱离参考原文照标签行事；
+  无参考时采用简洁直白的网文写法（短句优先、不拖沓、点到即止）。
   内容必须用本镜的，不得照搬参考的剧情与专名
-- 【风格基准】有参考时：以参考的风格为唯一基准，本提示中所有通用写作建议（含句式/修辞/抒情相关）均服从参考的实际写法；
-  无参考时（【写作参考】为"（无参考）"）：采用简洁直白的网文写法，短句优先、不拖沓、点到即止
+- 【修辞从参考】修辞习惯（比喻/夸张/直白/含蓄）跟随参考文本的实际写法，参考怎么用你就怎么用，以参考原文为准，不自行堆砌
 - 【排版·网文硬规范】（不受风格跟随影响，任何文风都必须满足）：
   - 段落极短：每段 1-3 句，禁止长段连排；超过 4 句必须断段
   - 对话独占成段：引号内的话单独成段，动作可前置（如「她冷笑：『……』」）或后置，但话本身独占一段
   - 视角/时间/场景切换必空行分段
-- 【留白，不啰嗦】允许信息跳跃，不必把每件事讲透；读者能推出来的，不写；同一信息只讲一遍，
-  禁止"解释性复述"（先给结论再展开、或把已说清的事换个说法再说一遍）
-- 【节奏错落】短句冲刺与长句铺垫交替，允许单句成段制造停顿；不要每段均匀 2-4 句的匀速推进
-- 符合给定 type（分镜类型）与 funcs（叙事功能）
-- 【字数对齐参考】本镜字数对齐【写作参考】分镜的平均长度（±10%），参考写多长你写多长，
-  不要偏长也不要偏短（具体字数目标以【本镜需求】里给出的为准）
+- 【字数对齐参考】本镜字数对齐【本镜需求】里给出的字数目标区间（由参考分镜实际长度推算，±10% 内），
+  信息量大的内容写到区间上限，简单的靠近下限，不要机械凑整数
 - 本镜是章节中的独立片段，不写场景开头/结尾的过渡语（衔接由整合阶段统一处理）
 - 主角称呼与上下镜保持一致（本镜若出现人物，沿用其已有称呼，不自行改名）`;
 
@@ -245,32 +333,33 @@ export async function main() {
   initWritedraft(); // 惰性初始化（参数/recalls/配置）
   const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`); // [task] 进度协议（task/manager.mjs 解析）
   taskLine({ stage: "write", phase: "逐镜写作" });
-  const useProfile = args.includes("--profile"); // 风格指纹（默认关闭）
-  // 风格指纹（--profile 开启；顶层 await 移入 main，避免模块顶层 await 阻碍 CJS 打包）
-  let styleProfile = "";
-  if (useProfile) {
-    console.log("\n[writedraft] 提炼风格指纹（--profile，读全部参考 → 显式风格契约）...");
-    const allRefsText = (recalls.shots ?? [])
-      .flatMap((s) => s.refs ?? [])
-      .map((r) => r.text ?? "")
-      .filter(Boolean)
-      .map((t) => `- ${t}`)
-      .join("\n");
-    if (allRefsText.trim().length > 20) {
-      const profileRaw = await chat([
-        { role: "system", content: "你是风格分析师。读下面的参考文本，提炼出它的写作风格指纹，输出纯文本（不要 JSON 格式符号）。" },
-        { role: "user", content: `参考文本（每个 "- " 开头是一条独立的分镜，不是连续段落）：\n${allRefsText.slice(0, 3000)}\n\n请输出风格指纹，覆盖：\n1. 句式（短句占比/平均长度）\n2. 口语特征（语气词/吐槽腔/市井比喻）\n3. 叙述视角与节奏（段落长短/停顿习惯/信息是否留白）\n4. 情绪表达（直接命名还是动作暗示）\n5. 禁忌（什么词/什么写法绝不出现）` },
-      ], null, false, 0.3);
-      styleProfile = profileRaw.trim();
-      console.log(`  [风格指纹] 已提炼（${styleProfile.length} 字符）`);
-    } else {
-      console.log("  [风格指纹] 参考不足，跳过提炼");
+  const useStyle = args.includes("--style"); // 风格锚点（--style：程序统计注入，零 LLM；默认关闭）
+  const styleMap = new Map(); // seq → statsToJson 结果（raw/labels）
+
+  // 风格锚点（--style 开启）：每镜 refs → 程序统计（零 LLM，确定性、可校验）
+  if (useStyle) {
+    console.log("\n[writedraft] 每镜风格锚点（--style：程序统计 18 维，零 LLM）...");
+    const refsOf = shots.map((s) => {
+      const refs = s.refs ?? [];
+      return refs.length
+        ? refs.map((r, i) => `${i + 1}. [${r.source}] 第${r.chapter}章 分镜${r.shotId}（${r.type}/${(r.funcs ?? []).join("、")}「${r.label ?? ""}」）：${r.text ?? ""}`).join("\n")
+        : "（无参考）";
+    });
+    for (let si = 0; si < shots.length; si++) {
+      const refsText = refsOf[si];
+      if (refsText === "（无参考）") continue;
+      const st = statsToJson(refsText);
+      styleMap.set(shots[si].seq, st);
     }
+    console.log(`  ✓ 统计完成：${styleMap.size}/${shots.length} 镜`);
+    for (const [seq, st] of styleMap) console.log(`    [镜${seq}] ${st.summary}`);
+    // 注：统计快照不落盘——实时计算产物只在 <项目>draft.txt 中留调试标记（见阶段①）
   } else {
-    console.log("[writedraft] 风格指纹：默认关闭（--profile 可开启）");
+    console.log("[writedraft] 风格锚点：默认关闭（--style 可开启；不传 = 直接以参考文本为风格样例）");
   }
 
   const shotBodies = [];
+  const shotDebugs = []; // 每镜调试标记（统计/字数/温度，写进 draft 供调试，不单独落盘）
   for (let si = 0; si < shots.length; si++) {
   const shot = shots[si];
   const refs = shot.refs ?? [];
@@ -290,8 +379,10 @@ export async function main() {
   const nextText = nextShot
     ? `【后一分镜·第${nextShot.seq}镜】${nextShot.type}「${nextShot.label ?? ""}」：${nextShot.content ?? ""}`
     : "（无后一分镜，本镜是收尾）";
-  // 字数基准：由配置决定（--shot-len / config shotLen / 默认 200），不再随机对齐参考
-  const lenTarget = lenTargetText;
+  // 逐镜写作参数（合并封装：风格锚点 + 解码四元组，一次产出）
+  const { styleText, decode: shotDecode } = shotParams(shot, refsText, useStyle, styleMap);
+  // 动态字数目标：该镜 refs 平均长度定区间（信息量感知）；无 refs 回退配置默认
+  const lenTarget = lenTargetFromRefs(refsText) ?? lenTargetText;
   const userMsg = [
     "## 任务：写一个分镜文本",
     "",
@@ -301,15 +392,18 @@ export async function main() {
     "注意：你写的是【中间的本镜】，前一分镜（含前二分镜）是它的来龙去脉，后一分镜是它的终点——",
     "本镜的结尾要为后一分镜的起点留好衔接（人物状态/场景/事件），本镜开头要承接前一分镜的结局（如有前二分镜，本镜的铺垫/伏笔要延续其走向）。",
     "",
-    "### 本镜风格指纹（强制遵循）",
-    styleProfile || "（无风格指纹，按下方【内含提炼】自行把握）",
+    "### 写作参考（本分镜内容在别处的实际写法——风格以此为准）",
+    refsText,
+    "",
+    "### 本镜统计形态（程序对上述参考的形态摘要，帮助你更快把握其风格——以参考原文实际读感为准）",
+    styleText || "（本镜无统计，按参考文本自行把握）",
     "",
     "### 时空映射：先理解平行时空，再写本时空（必须执行）",
     "【参考定位】以下【写作参考】是本分镜内容在**不同时空下可能呈现的映射**——它们描述的可能是",
     "同一类事件/场景/情绪在另一本书、另一段剧情里的样子。你需要：",
     "①【理解映射】看懂参考在「不同时空」里是怎么呈现这类内容的（人物怎么反应、场景怎么铺、对话怎么走）",
-    "②【对齐本质】提炼参考的句式律动与叙述口吻（句长/停顿/吐槽腔/市井感）——这些是跨时空不变的写法",
-    "③【按本时空写】现在回到本时空（本镜），用提炼到的律动和口吻，按【本镜需求】的内容写作；",
+    "②【对齐本质】从参考原文感受句式律动与叙述口吻（句长/停顿/吐槽腔/市井感）——这些是跨时空不变的写法",
+    "③【按本时空写】现在回到本时空（本镜），用从参考原文感受到的律动和口吻，按【本镜需求】的内容写作；",
     "   参考的具体人物/事件/设定是「另一时空」的，不得带入，只学它的「写法」",
     "",
     "### 本镜需求",
@@ -318,9 +412,6 @@ export async function main() {
     `标签: ${shot.label ?? ""}`,
     `内容: ${shot.content ?? ""}`,
     `字数目标: ${lenTarget}`,
-    "",
-    "### 写作参考（本分镜在不同时空下的映射——学习其写法，不引用其内容）",
-    refsText,
     "",
     "### 参考借用规则（显式声明）",
     "参考是「另一时空」的映射。仅当参考中的人物、事件、设定与【本镜需求】的内容**完全重合**时，",
@@ -333,20 +424,24 @@ export async function main() {
     "风格以【写作参考】为基准（参考怎么写你怎么写）；无参考时简洁直白、不拖沓。贴合本镜 type/funcs/内容；字数对齐字数目标（±10%）。",
     "只输出该分镜的正文文本，不要任何格式说明。",
   ].join("\n");
-  // 从本镜参考文本提炼 temperature（8 位小数，确定性：同参考同值）
-  const shotTemp = tempFromRefs(refsText);
   const raw = await chat([
     { role: "system", content: WRITE_SYSTEM },
     { role: "user", content: userMsg },
-  ], null, false, shotTemp); // temperature 由参考文本提炼（覆盖默认）；thinking 禁；max_tokens 不限制
+  ], null, false, shotDecode); // 解码四元组（refs 解析，或 type+funcs 规则兜底）；thinking 禁；max_tokens 不限制
   shotBodies.push(raw.trim());
-  console.log(`  [${shot.seq}] ${shot.type}「${shot.label ?? ""}」 → ${raw.length} 字符（temp=${shotTemp}，字数目标=${lenTarget}）`);
+  // 调试标记（draft 内联，供调试；不单独落盘 style-profiles）
+  const st = styleMap.get(shot.seq);
+  const d = shotDecode ?? {};
+  const dstr = `t=${d.temperature ?? "-"} p=${d.top_p ?? "-"} fp=${d.frequency_penalty ?? "-"} pp=${d.presence_penalty ?? "-"}`;
+  shotDebugs.push(`  [debug] 统计: ${st?.summary ?? "无"} | 字数目标: ${lenTarget} | 解码: ${dstr}`);
+  console.log(`  [${shot.seq}] ${shot.type}「${shot.label ?? ""}」 → ${raw.length} 字符（${dstr}，字数目标=${lenTarget}）`);
 }
 
-/* 拼接：带分镜标签的 draft（中间产物） */
+/* 拼接：带分镜标签的 draft（中间产物）——每镜内联调试标记（统计/字数/温度），供调试 */
 const taggedDraft = shotBodies.map((body, i) => {
   const s = shots[i];
-  return `【镜${i + 1}｜${s.type}｜${s.label ?? ""}】\n${body}`;
+  const dbg = shotDebugs[i] ?? "";
+  return `【镜${i + 1}｜${s.type}｜${s.label ?? ""}】\n${body}\n${dbg}`;
 }).join("\n\n");
 
 const draftName = `${project}draft.txt`; // <项目名>draft.txt（现有风格：项目名 + draft）
@@ -374,29 +469,41 @@ if (testMode) {
   process.exit(0);
 }
 
-/* ========== 阶段② 全文整合（draft + 章纲 → 最终稿，最小改动整合） ========== */
-console.log("\n[writedraft] 阶段② 全文整合（draft.txt + 原始章纲 → 完整章节，最小改动衔接）...");
+/* ========== 阶段② 全文整合（draft + 章纲 → 最终稿，最小改动整合） ==========
+ * 前置剥离（脚本，零 LLM）：把带标签 draft 中的【镜N｜type｜label】标签和 [debug] 调试行
+ * 全部剥掉，只传纯正文给整合 LLM——LLM 无需费心删标签，final 必然干净。
+ */
+console.log("\n[writedraft] 阶段② 全文整合（剥离标签/debug → draft 纯正文 + 原始章纲 → 完整章节，最小改动衔接）...");
 taskLine({ stage: "write", phase: "全文整合" });
+const cleanDraft = taggedDraft
+  .split("\n")
+  .filter((l) => !/^【镜\d+｜/.test(l.trim()) && !/^\s*\[debug\]/.test(l))
+  .join("\n")
+  .replace(/\n{3,}/g, "\n\n"); // 合并多余空行
+console.log(`  [剥离] 标签+debug 已剔除（${taggedDraft.length} → ${cleanDraft.length} 字符，仅纯正文进 LLM）`);
 const MERGE_SYSTEM = `你是编辑。把一组带标签的分镜文本整合为一个连贯章节。
 
 【硬约束】
 - 只做拼接与去标签，正文【逐字保留】：不扩写、不删减、不润色、不新增任何情节/台词/设定
 - 仅允许最小调整：消除镜间重复；统一前后指代；保持时间线顺序
 - 分镜中出现原始章纲未指定的人物台词或设定 → 删除或改为不特定表述
+- 【视角统一】检查全章叙述人称（第一人称"我" vs 第三人称姓名/她），判断多数镜采用的人称，
+  全文统一为该人称：第一人称则把正文叙述中的主角姓名改为"我"（对话引语内不改），
+  第三人称则把正文叙述中的"我"改为主角姓名/她（对话引语内不改）；全文不得混用
 - 输出纯正文章节，只输出正文`;
 const mergeUser = [
   "### 原始章纲（供你把握整体意图）",
   outline,
   "",
-  "### 带标签的分镜文本（按顺序）",
-  taggedDraft,
+  "### 分镜正文（已去标签，按顺序，直接整合）",
+  cleanDraft,
 ].join("\n\n");
-// 整合温度：从整篇 draft 提炼一个 temperature（8 位小数，确定性：同 draft 同值）
-const mergeTemp = tempFromRefs(taggedDraft);
+// 整合温度：从剥离后的纯正文提炼一个 temperature（8 位小数，确定性：同正文同值）
+const mergeTemp = tempFromText(cleanDraft);
 const mergeRaw = await chat([
   { role: "system", content: MERGE_SYSTEM },
   { role: "user", content: mergeUser },
-], null, false, mergeTemp); // 全文整合：thinking 禁用 + 温度由整篇 draft 提炼 + max_tokens 不限制
+], null, false, { temperature: mergeTemp }); // 全文整合：只调温度，其余用 API 默认；thinking 禁
 const finalText = mergeRaw.trim();
 console.log(`  [整合] 最终稿 ${finalText.length} 字符（temp=${mergeTemp}）`);
 // 对话拆分修复（默认开；--no-fix-dialogue 关闭）：整合完成后统一检测「"A"动作，"B"」重排为合法句式
