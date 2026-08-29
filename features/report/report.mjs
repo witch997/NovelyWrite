@@ -89,10 +89,17 @@ export function buildReport(project) {
 
   /* ================= HTML 组装（NovelyWrite / DSH 风格） ================= */
   const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // 内嵌章节数据（左栏预览 + 点击渲染右栏用；防 </script> 注入）
+  const jsonData = JSON.stringify(chapterInfos.map((c) => ({ num: c.num, title: c.title, summary: c.summary }))).replace(/</g, "\\u003c");
 
-  /* ---- 左栏 wiki 导航：概览 / 章节 / 人物 / 事件 ---- */
+  /* ---- 左栏 wiki 阅读页：章节条目带 summary 预览（可读），点击 → 右栏完整版 ---- */
+  const summaryPrev = (s, n = 60) => {
+    const t = String(s ?? "").replace(/\s+/g, " ").trim();
+    if (!t) return "";
+    return t.length > n ? `${t.slice(0, n)}…` : t;
+  };
   const link = (label, type, key, extra = "") =>
-    `<a class="wiki-link" data-type="${type}" data-key="${esc(key)}" title="详情页开发中" href="javascript:void(0)" onclick="return false">${esc(label)}</a>${extra}`;
+    `<a class="wiki-link" data-type="${type}" data-key="${esc(key)}" title="查看详情" href="javascript:void(0)">${esc(label)}</a>${extra}`;
 
   const wikiOverview = `
     <div class="wiki-sec">
@@ -105,9 +112,11 @@ export function buildReport(project) {
   const wikiChapters = `
     <div class="wiki-sec">
       <div class="wiki-sec-title">章节 · ${stats.chapters}</div>
-      ${chapterInfos.length ? chapterInfos.map((c) =>
-        `<div class="wiki-row">${link(`第${c.num}章 ${c.title}`, "chapter", String(c.num))}</div>`
-      ).join("") : `<div class="wiki-empty">暂无章节（先 annotate）</div>`}
+      ${chapterInfos.length ? chapterInfos.map((c) => `
+        <div class="wiki-row ch-row" data-num="${c.num}">
+          ${link(`第${c.num}章 ${c.title}`, "chapter", String(c.num))}
+          ${summaryPrev(c.summary) ? `<div class="wiki-prev">${esc(summaryPrev(c.summary))}</div>` : ""}
+        </div>`).join("") : `<div class="wiki-empty">暂无章节（先 annotate）</div>`}
     </div>`;
 
   const wikiEntities = `
@@ -137,10 +146,10 @@ export function buildReport(project) {
     </div>
   </aside>`;
 
-  /* ---- 右栏内容页（默认 = 全书概览；未来点左栏链接在此渲染详情） ---- */
+  /* ---- 右栏内容页（默认 = 全书概览；点左栏章节 → 渲染完整 summary） ---- */
   const viewPage = `
     <section class="view-pane" id="view">
-      <div class="content-page">
+      <div class="content-page" id="contentPage">
         <div class="hero">
           <div class="title">《${esc(name)}》</div>
           <div class="sub">拆书地图 · 全书概览</div>
@@ -159,7 +168,7 @@ export function buildReport(project) {
         </div>` : ""}
         <div class="card">
           <div class="card-title">关于本页</div>
-          <div class="card-body muted">左侧为本书的 wiki 导航（章节 / 人物 / 事件），条目均为超链接样式——点击跳转至右侧详情页功能开发中。</div>
+          <div class="card-body muted">左侧为本书的 wiki 阅读页：章节条目自带剧情预览，可直接阅读；点击任意条目在右侧打开完整内容。</div>
         </div>
       </div>
     </section>`;
@@ -219,7 +228,9 @@ body{
 .wiki-meta{padding:2px 18px;font-size:12px;color:var(--label-tertiary)}
 .wiki-row{padding:3px 18px;font-size:13px;display:flex;align-items:center;gap:8px}
 .wiki-row:hover{background:var(--bg-hover)}
+.wiki-row.active{background:var(--bg-active)}
 .wiki-count{color:var(--label-tertiary);font-size:11px;margin-left:auto;flex-shrink:0}
+.wiki-prev{color:var(--label-tertiary);font-size:12px;line-height:1.6;margin:2px 0 6px;flex-basis:100%}
 .wiki-empty{padding:3px 18px;font-size:12px;color:var(--label-tertiary)}
 .wiki-badge{
   display:inline-block;font-size:10px;padding:0 6px;border-radius:999px;
@@ -259,6 +270,10 @@ body{
 .card-body.muted{color:var(--label-tertiary);font-size:13px}
 .card-note{color:var(--label-tertiary);font-size:13px;margin-top:8px}
 .state{display:inline-block;padding:0 8px;border-radius:999px;background:var(--bg-active);color:var(--brand);font-size:12px;margin-left:6px}
+.muted{color:var(--label-tertiary)}
+.ch-head{padding:4px 0 16px;border-bottom:1px solid var(--border);margin-bottom:16px}
+.ch-title{font-size:18px;font-weight:700}
+.ch-meta{color:var(--label-tertiary);font-size:12px;margin-top:4px}
 </style>
 </head>
 <body data-theme="dark">
@@ -270,6 +285,51 @@ body{
     ${wikiNav}
     ${viewPage}
   </div>
+<script>
+const CHAPTERS = ${jsonData};
+const contentPage = document.getElementById("contentPage");
+const viewPane = document.getElementById("view");
+const esc2 = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+function renderChapter(ch) {
+  contentPage.innerHTML = \`
+    <div class="ch-head">
+      <div class="ch-title">第\${ch.num}章 \${esc2(ch.title)}</div>
+      <div class="ch-meta">第 \${ch.num} 章 / 共 \${CHAPTERS.length} 章</div>
+    </div>
+    <div class="card">
+      <div class="card-title">本章精读</div>
+      <div class="card-body">\${ch.summary ? esc2(ch.summary) : '<span class="muted">该章未标注 summary</span>'}</div>
+    </div>
+    <div class="card"><div class="card-title">◀ 返回全书概览</div></div>\`;
+  // 左栏高亮
+  document.querySelectorAll(".ch-row").forEach((el) => {
+    el.classList.toggle("active", Number(el.dataset.num) === ch.num);
+  });
+  viewPane.scrollTop = 0;
+}
+
+function renderOverview() {
+  location.reload();
+}
+
+// 左栏点击：章节 → 右栏完整 summary；人物/事件 → 占位提示
+document.querySelectorAll(".wiki-link").forEach((a) => {
+  a.addEventListener("click", (e) => {
+    e.preventDefault();
+    const type = a.dataset.type, key = a.dataset.key;
+    if (type === "chapter") {
+      const ch = CHAPTERS.find((c) => String(c.num) === key);
+      if (ch) renderChapter(ch);
+    } else {
+      contentPage.innerHTML = \`
+        <div class="ch-head"><div class="ch-title">\${type === "entity" ? "人物" : "事件"} · \${esc2(key)}</div></div>
+        <div class="card"><div class="card-body muted">该条目详情页开发中（当前拆书数据为纯 summary 投影）。</div></div>\`;
+      viewPane.scrollTop = 0;
+    }
+  });
+});
+</script>
 </body>
 </html>`;
 
