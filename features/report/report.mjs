@@ -71,28 +71,10 @@ export function buildReport(project) {
     }
   }
 
-  /* ---------- 实体聚合（从事件表 entity 提取 → 遭遇链） ---------- */
-  const entityMap = new Map(); // entity 名 → {events: []}
-  for (const e of lifecycle) {
-    const key = e.entity ?? "";
-    if (!key) continue;
-    if (!entityMap.has(key)) entityMap.set(key, { events: [] });
-    entityMap.get(key).events.push(e);
-  }
-  const entities = [...entityMap.entries()]
-    .map(([name, v]) => ({ name, count: v.events.length, events: v.events }))
-    .sort((a, b) => b.count - a.count);
-  // 每个实体遭遇链（按开始章排序）
-  for (const ent of entities) ent.events.sort((a, b) => (a["开始章"] ?? 0) - (b["开始章"] ?? 0));
-
-  /* ---------- 状态统计 ---------- */
+  /* ---------- 速览统计（章数 + 主线，主线来自卷纲 isMain） ---------- */
   const stats = {
     chapters: chapterInfos.length,
-    events: lifecycle.length,
-    targets: targets.length,
     mainTarget: targets.find((t) => t.isMain) ?? null,
-    suspended: lifecycle.filter((e) => e.state === "悬置").length,
-    entityCount: entities.length,
   };
 
   /* ================= HTML 组装 ================= */
@@ -104,64 +86,16 @@ export function buildReport(project) {
       <h2>① 全书速览</h2>
       <div class="hero">
         <div class="hero-title">《${esc(name)}》</div>
-        <div class="hero-sub">${stats.chapters} 章 · ${stats.events} 条事件 · ${stats.targets} 条目标线 · ${stats.entityCount} 个实体 · 悬置 ${stats.suspended}</div>
+        <div class="hero-sub">${stats.chapters} 章</div>
         ${stats.mainTarget ? `<div class="hero-main">★ 主线：${esc(stats.mainTarget.target)} <span class="state">${STATE_ICON[stats.mainTarget.state] ?? ""} ${esc(stats.mainTarget.state)}</span>（${stats.mainTarget.evidenceChapters?.length ?? 0} 章）</div>` : ""}
         ${stats.mainTarget?.note ? `<div class="hero-note">${esc(stats.mainTarget.note)}</div>` : ""}
       </div>
     </section>`;
 
-  // ② 大纲结构（卷纲目标线）
-  const secOutline = `
-    <section class="card" id="outline">
-      <h2>② 大纲结构 · ${stats.targets} 条目标线</h2>
-      ${volume?.goal ? `<p class="goal">全卷目标：${esc(volume.goal)}</p>` : ""}
-      ${targets.length ? `
-      <table>
-        <tr><th>#</th><th>目标</th><th>状态</th><th>证据章</th><th>说明</th></tr>
-        ${targets.map((t, i) => {
-          const ch = t.evidenceChapters ?? [];
-          const range = ch.length > 10 ? `${ch[0]}–${ch[ch.length - 1]}（${ch.length}章）` : ch.join("、");
-          return `<tr><td>${i + 1}${t.isMain ? " ★" : ""}</td><td class="tgt">${esc(t.target)}</td><td><span class="state">${STATE_ICON[t.state] ?? ""} ${esc(t.state)}</span></td><td class="muted">${esc(range)}</td><td class="muted small">${esc(t.note)}</td></tr>`;
-        }).join("")}
-      </table>` : `<p class="muted">暂无卷纲数据（先跑 aggregate）</p>`}
-    </section>`;
-
-  // ③ 人物弧光（实体遭遇链）
-  const mainEnts = entities.filter((e) => e.count >= 2).slice(0, 15); // 主要实体（出现≥2次）
-  const secEntities = `
-    <section class="card" id="entities">
-      <h2>③ 人物弧光 · ${mainEnts.length} 个主要实体</h2>
-      ${mainEnts.length ? mainEnts.map((ent) => `
-        <details class="entity">
-          <summary><b>${esc(ent.name)}</b> <span class="muted">· ${ent.count} 条事件 · 第 ${ent.events[0]["开始章"]}–${ent.events[ent.events.length - 1]["开始章"]} 章</span></summary>
-          <div class="chain">
-            ${ent.events.map((ev) => {
-              const dur = ev["结束章"] ? `${ev["开始章"]}–${ev["结束章"]}` : `${ev["开始章"]}–`;
-              return `<div class="chain-item"><span class="chip">第${dur}章</span> <span class="state">${STATE_ICON[ev.state] ?? ""} ${esc(ev.state)}</span> ${esc(ev.note || ev.entity)}</div>`;
-            }).join("")}
-          </div>
-        </details>`).join("") : `<p class="muted">暂无事件数据（先跑 aggregate 生成大事件）</p>`}
-      ${entities.length > mainEnts.length ? `<p class="muted small">另有 ${entities.length - mainEnts.length} 个低频实体（出现 1 次，已折叠）</p>` : ""}
-    </section>`;
-
-  // ④ 伏笔追踪（悬置事件 + 未达成目标线）
-  const suspended = lifecycle.filter((e) => e.state === "悬置");
-  const unDone = targets.filter((t) => t.state === "推进" || t.state === "搁置");
-  const secForeshadow = `
-    <section class="card" id="foreshadow">
-      <h2>④ 伏笔追踪 · 还没收的线</h2>
-      ${suspended.length ? `
-      <h3>悬置事件（${suspended.length}）</h3>
-      <ul>${suspended.map((e) => `<li><span class="chip">自第${e["开始章"]}章</span> ${esc(e.entity)} <span class="muted small">— ${esc(e.note)}</span></li>`).join("")}</ul>` : `<p class="muted">无悬置事件</p>`}
-      ${unDone.length ? `
-      <h3>未完成目标线（${unDone.length}）</h3>
-      <ul>${unDone.map((t) => `<li><span class="state">${STATE_ICON[t.state] ?? ""} ${esc(t.state)}</span> ${esc(t.target)}</li>`).join("")}</ul>` : ""}
-    </section>`;
-
-  // ⑤ 逐章精读（summary 是唯一权威事实）
+  // ② 逐章精读（summary 是唯一权威事实）
   const secChapters = `
     <section class="card" id="chapters">
-      <h2>⑤ 逐章精读 · ${chapterInfos.length} 章</h2>
+      <h2>② 逐章精读 · ${chapterInfos.length} 章</h2>
       ${chapterInfos.length ? chapterInfos.map((c) => `
         <details class="chapter">
           <summary><b>第${c.num}章 ${esc(c.title)}</b> ${c.function ? `<span class="chip">${esc(c.function)}</span>` : ""} ${c.mainline ? `<span class="chip">${esc(c.mainline.state ?? "")}</span>` : ""}</summary>
@@ -214,9 +148,6 @@ ul{margin:6px 0;padding-left:20px}li{font-size:13px;margin:4px 0}
 <header><h1>拆书地图</h1><span class="sub">${esc(name)} · ${new Date().toLocaleString("zh-CN")} · 数据源：store 章节标注/大事件/卷纲（summary 为唯一权威事实）</span></header>
 <main>
 ${secOverview}
-${secOutline}
-${secEntities}
-${secForeshadow}
 ${secChapters}
 <div class="footer">NovelyWrite · 拆书地图（纯程序投影，随时可重算）</div>
 </main>
@@ -240,7 +171,7 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith("report.mjs")) {
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, html, "utf-8");
     console.log(`✅ 拆书地图已生成: ${out}`);
-    console.log(`   统计: ${stats.chapters} 章 / ${stats.events} 事件 / ${stats.targets} 目标线 / ${stats.entityCount} 实体 / 悬置 ${stats.suspended}`);
+    console.log(`   统计: ${stats.chapters} 章${stats.mainTarget ? ` / 主线: ${stats.mainTarget.target}` : ""}`);
   } catch (e) {
     console.error(`❌ 生成失败: ${e.message}`);
     process.exit(1);
