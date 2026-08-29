@@ -105,37 +105,51 @@ body{
   transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
 }
 
-/* 顶栏 */
-.topbar{
-  display:flex;align-items:baseline;gap:12px;padding:14px 24px;
-  background:var(--bg-module);border-bottom:1px solid var(--border);
-  position:sticky;top:0;z-index:2;
-}
-.topbar .brand{font-size:16px;font-weight:600}
-.topbar .brand small{color:var(--label-tertiary);font-weight:400;font-size:12px;margin-left:8px}
-.topbar .stat{color:var(--label-secondary);font-size:13px;margin-left:auto}
-.topbar .stat b{color:var(--label-primary)}
+/* 词条头（wiki 风格） */
+.wiki-head{padding:20px 24px 14px;background:var(--bg-module);border-bottom:1px solid var(--border)}
+.site-name{font-size:11px;color:var(--label-tertiary);letter-spacing:1px}
+.article-title{font-size:30px;font-weight:700;margin:6px 0 2px;letter-spacing:1px}
+.article-sub{font-size:12px;color:var(--label-tertiary)}
 
 /* 单栏主体 */
-main{max-width:860px;margin:0 auto;padding:24px 20px 60px}
+main{max-width:900px;margin:0 auto;padding:22px 24px 60px}
 
-/* ① 全书速览 */
-.hero{
-  background:linear-gradient(135deg,var(--brand-100),transparent);
+/* 信息框 infobox（wiki 经典：右侧悬浮细边框表） */
+.infobox{
+  float:right;width:250px;margin:4px 0 16px 20px;
   border:1px solid var(--border);border-radius:var(--radius);
-  padding:22px 26px;margin-bottom:22px;
+  background:var(--bg-module);font-size:12.5px;overflow:hidden;
 }
-.hero .title{font-size:26px;font-weight:700;letter-spacing:1px}
-.hero .sub{color:var(--label-secondary);font-size:13px;margin-top:6px}
-.hero .main{margin-top:14px;font-size:15px}
-.hero .main .state{
-  display:inline-block;padding:0 8px;border-radius:999px;
-  background:var(--bg-active);color:var(--brand);font-size:12px;margin-left:8px;
+.infobox .ib-title{
+  padding:8px 12px;text-align:center;font-weight:700;font-size:14px;
+  background:var(--brand-100);color:var(--label-primary);border-bottom:1px solid var(--border);
 }
-.hero .note{color:var(--label-secondary);font-size:13px;margin-top:8px}
+.infobox table{width:100%;border-collapse:collapse}
+.infobox th,.infobox td{padding:6px 10px;vertical-align:top;text-align:left}
+.infobox th{color:var(--label-tertiary);font-weight:400;white-space:nowrap;width:40%}
+.infobox td{color:var(--label-primary)}
+.infobox tr+tr th,.infobox tr+tr td{border-top:1px solid var(--border)}
 
-/* ② 逐章精读 */
-.sec-title{font-size:15px;font-weight:600;margin:4px 2px 12px;color:var(--label-secondary)}
+/* 目录 TOC */
+.toc{
+  border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg-module);padding:12px 18px;margin-bottom:22px;
+  display:inline-block;min-width:240px;
+}
+.toc-title{font-weight:600;font-size:13px;margin-bottom:6px}
+.toc ol{margin:0;padding-left:22px}
+.toc li{font-size:13px;margin:3px 0}
+.toc a{color:var(--brand);text-decoration:none}
+.toc a:hover{text-decoration:underline}
+
+/* 正文章节标题（h2） */
+h2.sec{
+  font-size:19px;font-weight:600;margin:28px 0 14px;padding-bottom:6px;
+  border-bottom:1px solid var(--border-strong);
+}
+h2.sec .n{color:var(--label-tertiary);font-weight:400;margin-right:8px}
+
+/* 逐章精读条目（wiki 列表风格） */
 .chapter{
   border:1px solid var(--border);border-radius:var(--radius);
   background:var(--bg-module);margin-bottom:8px;overflow:hidden;
@@ -144,11 +158,13 @@ main{max-width:860px;margin:0 auto;padding:24px 20px 60px}
 .chapter:hover{border-color:var(--border-strong)}
 .chapter[open]{border-color:var(--brand);box-shadow:var(--shadow-md)}
 .chapter summary{
-  cursor:pointer;padding:12px 18px;font-size:14px;font-weight:600;
+  cursor:pointer;padding:12px 18px;font-size:14px;
   list-style:none;display:flex;align-items:center;gap:10px;user-select:none;
 }
 .chapter summary::-webkit-details-marker{display:none}
-.chapter summary .num{color:var(--label-tertiary);font-size:12px;font-weight:400}
+.chapter summary .num{color:var(--label-tertiary);font-size:12px;flex-shrink:0}
+.chapter summary .t{color:var(--brand);font-weight:500}
+.chapter summary .t:hover{text-decoration:underline}
 .chapter summary::after{
   content:"▸";margin-left:auto;color:var(--label-tertiary);
   transition:transform var(--dur) var(--ease);
@@ -160,29 +176,52 @@ main{max-width:860px;margin:0 auto;padding:24px 20px 60px}
 }
 .chapter .empty{color:var(--label-tertiary);font-size:13px}
 .no-data{color:var(--label-tertiary);font-size:13px;padding:10px 2px}
+
+/* 页脚 */
+.footer{
+  margin-top:40px;padding-top:14px;border-top:1px solid var(--border);
+  color:var(--label-tertiary);font-size:11.5px;text-align:center;clear:both;
+}
 </style>
 </head>
 <body data-theme="light">
-  <header class="topbar">
-    <div class="brand">拆书<small>${esc(name)}</small></div>
-    <div class="stat"><b>${stats.chapters}</b> 章${stats.mainTarget ? ` · 主线：<b>${esc(stats.mainTarget.target)}</b> <span style="color:var(--brand)">${esc(stats.mainTarget.state)}</span>` : ""}</div>
-  </header>
+  <div class="wiki-head">
+    <div class="site-name">NovelyWrite 拆书 · 自由阅读</div>
+    <div class="article-title">《${esc(name)}》</div>
+    <div class="article-sub">本文由拆书地图生成，内容为各章剧情摘要（summary 为唯一权威事实）</div>
+  </div>
   <main>
-    <section class="hero">
-      <div class="title">《${esc(name)}》</div>
-      <div class="sub">拆书地图 · 全书速览</div>
-      ${stats.mainTarget ? `<div class="main">★ 主线：${esc(stats.mainTarget.target)}<span class="state">${esc(stats.mainTarget.state)}</span></div>` : ""}
-      ${stats.mainTarget?.note ? `<div class="note">${esc(stats.mainTarget.note)}</div>` : ""}
-    </section>
+    <aside class="infobox">
+      <div class="ib-title">《${esc(name)}》</div>
+      <table>
+        <tr><th>章节</th><td>${stats.chapters} 章</td></tr>
+        <tr><th>主线</th><td>${stats.mainTarget ? `${esc(stats.mainTarget.target)}（${esc(stats.mainTarget.state)}）` : "—"}</td></tr>
+        ${stats.mainTarget?.evidenceChapters?.length ? `<tr><th>主线跨度</th><td>${stats.mainTarget.evidenceChapters.length} 章</td></tr>` : ""}
+      </table>
+    </aside>
 
-    <section>
-      <div class="sec-title">逐章精读 · ${stats.chapters} 章</div>
-      ${chapterInfos.length ? chapterInfos.map((c) => `
-        <details class="chapter">
-          <summary><span class="num">${c.num}</span> ${esc(c.title)}</summary>
-          <div class="summary">${c.summary ? esc(c.summary) : `<span class="empty">该章未标注 summary</span>`}</div>
-        </details>`).join("") : `<div class="no-data">暂无章节数据（先 annotate 建库）</div>`}
-    </section>
+    <nav class="toc">
+      <div class="toc-title">目录</div>
+      <ol>
+        <li><a href="#overview">全书速览</a></li>
+        <li><a href="#chapters">逐章精读</a></li>
+      </ol>
+    </nav>
+
+    <h2 class="sec" id="overview"><span class="n">1</span>全书速览</h2>
+    <p style="font-size:14.5px;line-height:1.9">
+      《${esc(name)}》共 ${stats.chapters} 章。
+      ${stats.mainTarget ? `主线为「${esc(stats.mainTarget.target)}」，当前状态：${esc(stats.mainTarget.state)}。${stats.mainTarget.note ? esc(stats.mainTarget.note) : ""}` : "暂无主线数据。"}
+    </p>
+
+    <h2 class="sec" id="chapters"><span class="n">2</span>逐章精读</h2>
+    ${chapterInfos.length ? chapterInfos.map((c) => `
+      <details class="chapter">
+        <summary><span class="num">${c.num}</span><span class="t">${esc(c.title)}</span></summary>
+        <div class="summary">${c.summary ? esc(c.summary) : `<span class="empty">该章未标注 summary</span>`}</div>
+      </details>`).join("") : `<div class="no-data">暂无章节数据（先 annotate 建库）</div>`}
+
+    <div class="footer">本页由 NovelyWrite 拆书地图自动生成 · 数据源：章节标注（summary）· 纯程序投影，可随时重算</div>
   </main>
 </body>
 </html>`;
