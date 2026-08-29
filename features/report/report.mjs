@@ -2,14 +2,13 @@
 /**
  * report.mjs — 拆书地图生成器（features/report 模块）
  *
- * 输入：store/<域>/<书>project/ 下的已有 JSON（章节标注 summary / 章节表 / 大事件 / 卷纲）
- * 输出：一份自包含 HTML（NovelyWrite 风格，双栏 wiki 形态）——纯程序投影，零 LLM，幂等。
+ * 输入：store/<域>/<书>project/ 下的已有 JSON（章节标注 summary / 章节表 / 卷纲）
+ * 输出：一份自包含 HTML（单栏，NovelyWrite 项目浅色风格）——纯程序投影，零 LLM，幂等。
  *
- * 布局：
+ * 布局（单栏纵向流）：
  *   顶栏：书名 / 统计
- *   左栏：wiki 导航页（书的超文本文档）—— 章节 / 人物 / 事件 均为可点击超链接样式
- *         （跳转暂未实现，点击仅占位；未来点击 → 右栏渲染对应详情）
- *   右栏：内容页 —— 默认展示全书概览（书的首页），未来承接链接跳转的详情内容
+ *   ① 全书速览：书名 + 主线一句话
+ *   ② 逐章精读：每章一个折叠卡（章标题 → summary 全文），默认折叠，点开即读
  *
  * 原则：summary 是唯一权威事实；本模块只投影不篡改；缺数据段自动降级。
  *
@@ -35,7 +34,7 @@ function chapterJsonPath(root, n) {
 }
 
 /**
- * 生成拆书地图 HTML（wiki 导航 + 内容页，NovelyWrite 风格）
+ * 生成拆书地图 HTML（单栏，NovelyWrite 浅色风格）
  * @param {string} project 书名（域自动探测：my 优先）
  * @returns {{html: string, project: string, root: string, stats: object}}
  */
@@ -48,8 +47,6 @@ export function buildReport(project) {
   const chapters = tableJson?.chapters ?? [];
   const volume = readJson(path.join(root, "卷纲", "volume.json"));
   const targets = volume?.targets ?? [];
-  const eventJson = readJson(path.join(root, "大事件", "event.json"));
-  const lifecycle = eventJson?.lifecycle ?? [];
 
   // 单章标注（summary 是唯一权威）
   const chapterInfos = [];
@@ -64,272 +61,129 @@ export function buildReport(project) {
     }
   }
 
-  // 实体聚合（从事件表 entity 提取；用于左栏"人物"导航）
-  const entityCount = new Map();
-  for (const e of lifecycle) {
-    const key = e.entity ?? "";
-    if (key) entityCount.set(key, (entityCount.get(key) ?? 0) + 1);
-  }
-  const entities = [...entityCount.entries()]
-    .map(([name, count]) => ({ name, count }))
-    .sort((a, b) => b.count - a.count);
-
-  // 事件列表（用于左栏"事件"导航；悬置优先 + 按开始章排序）
-  const events = [...lifecycle]
-    .sort((a, b) => (a.state === "悬置" ? -1 : 1) - (b.state === "悬置" ? -1 : 1) || (a["开始章"] ?? 0) - (b["开始章"] ?? 0));
-
-  /* ---------- 统计 ---------- */
+  /* ---------- 速览统计 ---------- */
   const stats = {
     chapters: chapterInfos.length,
-    events: lifecycle.length,
-    entities: entities.length,
-    suspended: lifecycle.filter((e) => e.state === "悬置").length,
     mainTarget: targets.find((t) => t.isMain) ?? null,
   };
 
-  /* ================= HTML 组装（NovelyWrite / DSH 风格） ================= */
+  /* ================= HTML 组装（NovelyWrite / DSH 浅色风格） ================= */
   const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  // 内嵌章节数据（左栏预览 + 点击渲染右栏用；防 </script> 注入）
-  const jsonData = JSON.stringify(chapterInfos.map((c) => ({ num: c.num, title: c.title, summary: c.summary }))).replace(/</g, "\\u003c");
-
-  /* ---- 左栏 wiki 阅读页：章节条目带 summary 预览（可读），点击 → 右栏完整版 ---- */
-  const summaryPrev = (s, n = 60) => {
-    const t = String(s ?? "").replace(/\s+/g, " ").trim();
-    if (!t) return "";
-    return t.length > n ? `${t.slice(0, n)}…` : t;
-  };
-  const link = (label, type, key, extra = "") =>
-    `<a class="wiki-link" data-type="${type}" data-key="${esc(key)}" title="查看详情" href="javascript:void(0)">${esc(label)}</a>${extra}`;
-
-  const wikiOverview = `
-    <div class="wiki-sec">
-      <div class="wiki-sec-title">书</div>
-      <div class="wiki-book">《${esc(name)}》</div>
-      <div class="wiki-meta">${stats.chapters} 章 · ${stats.events} 事件 · ${stats.entities} 实体 · 悬置 ${stats.suspended}</div>
-      ${stats.mainTarget ? `<div class="wiki-meta">★ ${esc(stats.mainTarget.target)}（${esc(stats.mainTarget.state)}）</div>` : ""}
-    </div>`;
-
-  const wikiChapters = `
-    <div class="wiki-sec">
-      <div class="wiki-sec-title">章节 · ${stats.chapters}</div>
-      ${chapterInfos.length ? chapterInfos.map((c) => `
-        <div class="wiki-row ch-row" data-num="${c.num}">
-          ${link(`第${c.num}章 ${c.title}`, "chapter", String(c.num))}
-          ${summaryPrev(c.summary) ? `<div class="wiki-prev">${esc(summaryPrev(c.summary))}</div>` : ""}
-        </div>`).join("") : `<div class="wiki-empty">暂无章节（先 annotate）</div>`}
-    </div>`;
-
-  const wikiEntities = `
-    <div class="wiki-sec">
-      <div class="wiki-sec-title">人物 · ${entities.length}</div>
-      ${entities.length ? entities.map((e) =>
-        `<div class="wiki-row">${link(e.name, "entity", e.name)} <span class="wiki-count">×${e.count}</span></div>`
-      ).join("") : `<div class="wiki-empty">暂无事件（先 aggregate）</div>`}
-    </div>`;
-
-  const wikiEvents = `
-    <div class="wiki-sec">
-      <div class="wiki-sec-title">事件 · ${events.length}</div>
-      ${events.length ? events.map((e) => {
-        const dur = e["结束章"] ? `${e["开始章"]}–${e["结束章"]}` : `第${e["开始章"]}章起`;
-        const badge = e.state === "悬置" ? `<span class="wiki-badge susp">悬置</span>` : `<span class="wiki-badge">${esc(e.state)}</span>`;
-        return `<div class="wiki-row">${badge} ${link(e.entity, "event", e.entity)} <span class="wiki-count">${dur}</span></div>`;
-      }).join("") : `<div class="wiki-empty">暂无事件</div>`}
-    </div>`;
-
-  const wikiNav = `<aside class="list-pane" id="wiki">
-    <div class="wiki-scroll">
-      ${wikiOverview}
-      ${wikiChapters}
-      ${wikiEntities}
-      ${wikiEvents}
-    </div>
-  </aside>`;
-
-  /* ---- 右栏内容页（默认 = 全书概览；点左栏章节 → 渲染完整 summary） ---- */
-  const viewPage = `
-    <section class="view-pane" id="view">
-      <div class="content-page" id="contentPage">
-        <div class="hero">
-          <div class="title">《${esc(name)}》</div>
-          <div class="sub">拆书地图 · 全书概览</div>
-        </div>
-        <div class="stat-grid">
-          <div class="stat-card"><div class="v">${stats.chapters}</div><div class="k">章节</div></div>
-          <div class="stat-card"><div class="v">${stats.entities}</div><div class="k">人物实体</div></div>
-          <div class="stat-card"><div class="v">${stats.events}</div><div class="k">事件</div></div>
-          <div class="stat-card"><div class="v ${stats.suspended ? "warn" : ""}">${stats.suspended}</div><div class="k">悬置（未收线）</div></div>
-        </div>
-        ${stats.mainTarget ? `
-        <div class="card">
-          <div class="card-title">★ 主线</div>
-          <div class="card-body">${esc(stats.mainTarget.target)} <span class="state">${esc(stats.mainTarget.state)}</span></div>
-          ${stats.mainTarget?.note ? `<div class="card-note">${esc(stats.mainTarget.note)}</div>` : ""}
-        </div>` : ""}
-        <div class="card">
-          <div class="card-title">关于本页</div>
-          <div class="card-body muted">左侧为本书的 wiki 阅读页：章节条目自带剧情预览，可直接阅读；点击任意条目在右侧打开完整内容。</div>
-        </div>
-      </div>
-    </section>`;
 
   const html = `<!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>拆书 · ${esc(name)}</title>
 <style>
-/* ===== NovelyWrite / DSH 风格（bluish 色阶 + deepseek 蓝，深色） ===== */
+/* ===== NovelyWrite / DSH 风格（bluish 色阶 + deepseek 蓝，浅色主题） ===== */
 :root{
   --n-50:#f8fafc;--n-75:#f1f5f9;--n-100:#e9eef5;--n-150:#dfe6ef;--n-200:#d3dbe6;
   --n-300:#b8c3d2;--n-400:#94a3b8;--n-500:#7587a0;--n-600:#5c6f88;--n-700:#47586f;
   --n-750:#39495e;--n-800:#2d3b4d;--n-850:#232f3e;--n-900:#1a2430;--n-950:#10161f;
   --brand-100:#dbeafe;--brand-400:#4176e6;--brand-500:#2563eb;--brand-600:#1d4ed8;
-  --amber-500:#d97706;--green-500:#22a55d;--green-100:#dcfce7;--red-500:#dc2626;--red-100:#fee2e2;
+  --green-500:#22a55d;--green-100:#dcfce7;--amber-500:#d97706;--amber-100:#fef3c7;
+  --red-500:#dc2626;--red-100:#fee2e2;
   --ease:cubic-bezier(.4,0,.2,1);--dur:.2s;
   --radius:8px;--radius-sm:6px;
+  --shadow-sm:0 1px 2px rgba(16,22,31,.06);
+  --shadow-md:0 4px 16px rgba(16,22,31,.1);
 }
-body[data-theme="dark"]{
-  --bg-base:var(--n-950);--bg-module:var(--n-850);--bg-hover:var(--n-800);
-  --bg-active:rgba(65,118,230,.18);--border:var(--n-750);--border-strong:var(--n-600);
-  --label-primary:var(--n-50);--label-secondary:var(--n-300);--label-tertiary:var(--n-500);
-  --brand:var(--brand-400);--brand-hover:var(--brand-500);--interactive-hover:rgba(255,255,255,.08);
+body[data-theme="light"]{
+  --bg-base:var(--n-50);--bg-module:#ffffff;--bg-hover:var(--n-75);
+  --bg-active:var(--brand-100);--border:var(--n-150);--border-strong:var(--n-200);
+  --label-primary:var(--n-950);--label-secondary:var(--n-700);--label-tertiary:var(--n-400);
+  --brand:var(--brand-500);--brand-hover:var(--brand-600);
+  --interactive-hover:rgba(38,49,72,.06);--code-bg:var(--n-75);
 }
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{height:100%}
 body{
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   background:var(--bg-base);color:var(--label-primary);
-  display:flex;flex-direction:column;overflow:hidden;-webkit-font-smoothing:antialiased;
+  min-height:100vh;-webkit-font-smoothing:antialiased;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
 }
 
 /* 顶栏 */
-.topbar{display:flex;align-items:baseline;gap:12px;padding:13px 20px;background:var(--bg-module);border-bottom:1px solid var(--border);flex-shrink:0}
-.topbar .brand{font-size:15px;font-weight:600}
+.topbar{
+  display:flex;align-items:baseline;gap:12px;padding:14px 24px;
+  background:var(--bg-module);border-bottom:1px solid var(--border);
+  position:sticky;top:0;z-index:2;
+}
+.topbar .brand{font-size:16px;font-weight:600}
 .topbar .brand small{color:var(--label-tertiary);font-weight:400;font-size:12px;margin-left:8px}
 .topbar .stat{color:var(--label-secondary);font-size:13px;margin-left:auto}
 .topbar .stat b{color:var(--label-primary)}
 
-/* 主体双栏 */
-.main{display:flex;flex:1;min-height:0}
+/* 单栏主体 */
+main{max-width:860px;margin:0 auto;padding:24px 20px 60px}
 
-/* 左栏 wiki 导航 */
-.list-pane{width:300px;flex-shrink:0;border-right:1px solid var(--border);background:var(--bg-module);overflow:hidden;display:flex}
-.wiki-scroll{flex:1;overflow-y:auto;padding:14px 0}
-.list-pane::-webkit-scrollbar{width:8px}
-.list-pane::-webkit-scrollbar-thumb{background:var(--n-700);border-radius:4px}
-.wiki-sec{padding:4px 0 10px;border-bottom:1px solid var(--border)}
-.wiki-sec-title{
-  padding:6px 18px 4px;font-size:11px;font-weight:600;letter-spacing:1px;
-  color:var(--label-tertiary);text-transform:uppercase;
-}
-.wiki-book{padding:2px 18px;font-size:15px;font-weight:600}
-.wiki-meta{padding:2px 18px;font-size:12px;color:var(--label-tertiary)}
-.wiki-row{padding:3px 18px;font-size:13px;display:flex;align-items:center;gap:8px}
-.wiki-row:hover{background:var(--bg-hover)}
-.wiki-row.active{background:var(--bg-active)}
-.wiki-count{color:var(--label-tertiary);font-size:11px;margin-left:auto;flex-shrink:0}
-.wiki-prev{color:var(--label-tertiary);font-size:12px;line-height:1.6;margin:2px 0 6px;flex-basis:100%}
-.wiki-empty{padding:3px 18px;font-size:12px;color:var(--label-tertiary)}
-.wiki-badge{
-  display:inline-block;font-size:10px;padding:0 6px;border-radius:999px;
-  background:var(--n-700);color:var(--n-100);flex-shrink:0;
-}
-.wiki-badge.susp{background:rgba(217,119,6,.18);color:var(--amber-500)}
-
-/* wiki 链接（可点击样式；跳转开发中） */
-.wiki-link{
-  color:var(--brand);text-decoration:none;cursor:pointer;
-  border-bottom:1px dashed rgba(65,118,230,.4);transition:color var(--dur) var(--ease);
-}
-.wiki-link:hover{color:var(--brand-hover);text-decoration:underline}
-
-/* 右栏内容页 */
-.view-pane{flex:1;overflow-y:auto;padding:26px 34px}
-.view-pane::-webkit-scrollbar{width:8px}
-.view-pane::-webkit-scrollbar-thumb{background:var(--n-700);border-radius:4px}
-.content-page{max-width:760px;margin:0 auto}
+/* ① 全书速览 */
 .hero{
-  background:linear-gradient(135deg,rgba(65,118,230,.16),transparent);
-  border:1px solid var(--border);border-radius:var(--radius);padding:22px 26px;margin-bottom:20px;
+  background:linear-gradient(135deg,var(--brand-100),transparent);
+  border:1px solid var(--border);border-radius:var(--radius);
+  padding:22px 26px;margin-bottom:22px;
 }
 .hero .title{font-size:26px;font-weight:700;letter-spacing:1px}
 .hero .sub{color:var(--label-secondary);font-size:13px;margin-top:6px}
-.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
-.stat-card{
-  background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);
-  padding:14px 8px;text-align:center;
+.hero .main{margin-top:14px;font-size:15px}
+.hero .main .state{
+  display:inline-block;padding:0 8px;border-radius:999px;
+  background:var(--bg-active);color:var(--brand);font-size:12px;margin-left:8px;
 }
-.stat-card .v{font-size:22px;font-weight:700;color:var(--label-primary)}
-.stat-card .v.warn{color:var(--amber-500)}
-.stat-card .k{font-size:11px;color:var(--label-tertiary);margin-top:2px}
-.card{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;margin-bottom:14px}
-.card-title{font-size:13px;font-weight:600;color:var(--label-secondary);margin-bottom:8px}
-.card-body{font-size:14px;line-height:1.8}
-.card-body.muted{color:var(--label-tertiary);font-size:13px}
-.card-note{color:var(--label-tertiary);font-size:13px;margin-top:8px}
-.state{display:inline-block;padding:0 8px;border-radius:999px;background:var(--bg-active);color:var(--brand);font-size:12px;margin-left:6px}
-.muted{color:var(--label-tertiary)}
-.ch-head{padding:4px 0 16px;border-bottom:1px solid var(--border);margin-bottom:16px}
-.ch-title{font-size:18px;font-weight:700}
-.ch-meta{color:var(--label-tertiary);font-size:12px;margin-top:4px}
+.hero .note{color:var(--label-secondary);font-size:13px;margin-top:8px}
+
+/* ② 逐章精读 */
+.sec-title{font-size:15px;font-weight:600;margin:4px 2px 12px;color:var(--label-secondary)}
+.chapter{
+  border:1px solid var(--border);border-radius:var(--radius);
+  background:var(--bg-module);margin-bottom:8px;overflow:hidden;
+  box-shadow:var(--shadow-sm);transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease);
+}
+.chapter:hover{border-color:var(--border-strong)}
+.chapter[open]{border-color:var(--brand);box-shadow:var(--shadow-md)}
+.chapter summary{
+  cursor:pointer;padding:12px 18px;font-size:14px;font-weight:600;
+  list-style:none;display:flex;align-items:center;gap:10px;user-select:none;
+}
+.chapter summary::-webkit-details-marker{display:none}
+.chapter summary .num{color:var(--label-tertiary);font-size:12px;font-weight:400}
+.chapter summary::after{
+  content:"▸";margin-left:auto;color:var(--label-tertiary);
+  transition:transform var(--dur) var(--ease);
+}
+.chapter[open] summary::after{transform:rotate(90deg)}
+.chapter .summary{
+  padding:14px 18px 18px;font-size:14px;line-height:1.9;color:var(--label-primary);
+  border-top:1px solid var(--border);background:var(--n-50);
+}
+.chapter .empty{color:var(--label-tertiary);font-size:13px}
+.no-data{color:var(--label-tertiary);font-size:13px;padding:10px 2px}
 </style>
 </head>
-<body data-theme="dark">
+<body data-theme="light">
   <header class="topbar">
     <div class="brand">拆书<small>${esc(name)}</small></div>
-    <div class="stat"><b>${stats.chapters}</b> 章 · <b>${stats.entities}</b> 人物 · <b>${stats.events}</b> 事件</div>
+    <div class="stat"><b>${stats.chapters}</b> 章${stats.mainTarget ? ` · 主线：<b>${esc(stats.mainTarget.target)}</b> <span style="color:var(--brand)">${esc(stats.mainTarget.state)}</span>` : ""}</div>
   </header>
-  <div class="main">
-    ${wikiNav}
-    ${viewPage}
-  </div>
-<script>
-const CHAPTERS = ${jsonData};
-const contentPage = document.getElementById("contentPage");
-const viewPane = document.getElementById("view");
-const esc2 = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  <main>
+    <section class="hero">
+      <div class="title">《${esc(name)}》</div>
+      <div class="sub">拆书地图 · 全书速览</div>
+      ${stats.mainTarget ? `<div class="main">★ 主线：${esc(stats.mainTarget.target)}<span class="state">${esc(stats.mainTarget.state)}</span></div>` : ""}
+      ${stats.mainTarget?.note ? `<div class="note">${esc(stats.mainTarget.note)}</div>` : ""}
+    </section>
 
-function renderChapter(ch) {
-  contentPage.innerHTML = \`
-    <div class="ch-head">
-      <div class="ch-title">第\${ch.num}章 \${esc2(ch.title)}</div>
-      <div class="ch-meta">第 \${ch.num} 章 / 共 \${CHAPTERS.length} 章</div>
-    </div>
-    <div class="card">
-      <div class="card-title">本章精读</div>
-      <div class="card-body">\${ch.summary ? esc2(ch.summary) : '<span class="muted">该章未标注 summary</span>'}</div>
-    </div>
-    <div class="card"><div class="card-title">◀ 返回全书概览</div></div>\`;
-  // 左栏高亮
-  document.querySelectorAll(".ch-row").forEach((el) => {
-    el.classList.toggle("active", Number(el.dataset.num) === ch.num);
-  });
-  viewPane.scrollTop = 0;
-}
-
-function renderOverview() {
-  location.reload();
-}
-
-// 左栏点击：章节 → 右栏完整 summary；人物/事件 → 占位提示
-document.querySelectorAll(".wiki-link").forEach((a) => {
-  a.addEventListener("click", (e) => {
-    e.preventDefault();
-    const type = a.dataset.type, key = a.dataset.key;
-    if (type === "chapter") {
-      const ch = CHAPTERS.find((c) => String(c.num) === key);
-      if (ch) renderChapter(ch);
-    } else {
-      contentPage.innerHTML = \`
-        <div class="ch-head"><div class="ch-title">\${type === "entity" ? "人物" : "事件"} · \${esc2(key)}</div></div>
-        <div class="card"><div class="card-body muted">该条目详情页开发中（当前拆书数据为纯 summary 投影）。</div></div>\`;
-      viewPane.scrollTop = 0;
-    }
-  });
-});
-</script>
+    <section>
+      <div class="sec-title">逐章精读 · ${stats.chapters} 章</div>
+      ${chapterInfos.length ? chapterInfos.map((c) => `
+        <details class="chapter">
+          <summary><span class="num">${c.num}</span> ${esc(c.title)}</summary>
+          <div class="summary">${c.summary ? esc(c.summary) : `<span class="empty">该章未标注 summary</span>`}</div>
+        </details>`).join("") : `<div class="no-data">暂无章节数据（先 annotate 建库）</div>`}
+    </section>
+  </main>
 </body>
 </html>`;
 
@@ -350,7 +204,7 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith("report.mjs")) {
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, html, "utf-8");
     console.log(`✅ 拆书地图已生成: ${out}`);
-    console.log(`   统计: ${stats.chapters} 章 / ${stats.entities} 实体 / ${stats.events} 事件 / 悬置 ${stats.suspended}`);
+    console.log(`   统计: ${stats.chapters} 章${stats.mainTarget ? ` / 主线: ${stats.mainTarget.target}` : ""}`);
   } catch (e) {
     console.error(`❌ 生成失败: ${e.message}`);
     process.exit(1);
