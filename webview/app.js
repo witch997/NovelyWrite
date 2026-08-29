@@ -1001,6 +1001,24 @@
     }
   }
 
+  /* ================= 拆书：生成拆书地图（读 store 已建库数据 → 新窗口展示） ================= */
+  async function dismantleBook() {
+    const name = state.currentBook;
+    if (!name) { toast("请先选择一本书"); return; }
+    // 探测该书是否已建库（my 域优先）
+    let hasProject = false;
+    try {
+      const d = await api("/api/projects");
+      const p = (d.projects || []).find((x) => x.name === name && x.domain === "my");
+      hasProject = Boolean(p);
+    } catch { /* 探测失败按未建库处理 */ }
+    if (!hasProject) { toast(`《${name}》尚未建库，请先「建库标注」再拆书`); return; }
+    // 新窗口打开拆书地图（GET /api/report/:name 直出 HTML）
+    const url = `/api/report/${encodeURIComponent(name)}`;
+    window.open(url, "_blank");
+    toast(`正在生成《${name}》拆书地图…（新窗口）`);
+  }
+
   /* ================= AI 写作流程 ================= */
   async function startTask(kind, body) {
     const { taskId } = await api(`/api/tasks/${kind}`, { method: "POST", body: JSON.stringify(body) });
@@ -1372,6 +1390,7 @@
     $("btnAddChapter").onclick = addChapter;
     $("btnNewBook").onclick = newBook;
     $("btnAnnotateBook").onclick = annotateBook; // 对我的书建库标注
+    $("btnDismantle").onclick = dismantleBook;   // 拆书：生成拆书地图并新窗口打开
     $("bookSelect").onchange = onBookChange;
     // 顶栏「清空」= 清空编辑器（不落盘）；「保存」= 保存到 mybook 资产区
     $("btnNew").onclick = () => { if (vditor) vditor.setValue(""); };

@@ -58,6 +58,7 @@ import { loadTaskLog } from "./shared/tasks.mjs";
 import { startTask, listTasks, apiTaskRerun, apiTaskStale, killTask, hasRunningTask, taskFinishedAt, cleanupOnStart } from "./task/manager.mjs";
 import { scanBookFingerprints, diffFingerprints, readFingerprints } from "./task/fingerprint.mjs";
 import { decodeTextBuffer, checkTextHealthy } from "./shared/encoding.mjs";
+import { buildReport } from "./features/report/report.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -662,6 +663,11 @@ const ROUTES = [
   { m: "GET", p: /^\/api\/projects\/([^/]+)\/events$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "大事件", "event.json")) ?? { events: [] } },
   { m: "GET", p: /^\/api\/projects\/([^/]+)\/volumes$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "卷纲", "volume.json")) ?? { volumes: [] } },
   { m: "GET", p: /^\/api\/projects\/([^/]+)\/chapter-table$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "章节", "章节表.json")) ?? { chapters: [] } },
+  // 拆书地图：读 store 已有 JSON → 生成自包含 HTML（纯程序投影，零 LLM）
+  { m: "GET", p: /^\/api\/report\/([^/]+)$/, h: (m) => {
+      const { html } = buildReport(decodeURIComponent(m[1]));
+      return { __html: html };
+    } },
   { m: "POST", p: /^\/api\/search$/, h: async (_m, body) => apiSearch(body) },
   { m: "GET", p: /^\/api\/config$/, h: () => apiConfigGet() },
   { m: "PUT", p: /^\/api\/config$/, h: (_m, body) => apiConfigPut(body) },
@@ -835,6 +841,11 @@ const server = http.createServer(async (req, res) => {
     try {
       const body = ["POST", "PUT"].includes(req.method) ? await getBody(req) : null;
       const data = await r.h(m, body);
+      if (data && data.__html) { // HTML 直出（拆书地图等）
+        res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(data.__html);
+        return;
+      }
       json(res, 200, data);
     } catch (err) {
       errRes(res, err);
