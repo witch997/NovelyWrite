@@ -206,12 +206,18 @@ const esc2 = (s) => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").r
 async function ask() {
   const q = askInput.value.trim();
   if (!q) return;
+  // 静态预览模式（双击打开 file://）无 API，提示正确访问方式
+  if (location.protocol === "file:") {
+    askResult.innerHTML = \`<div class="err">静态预览模式无法提问。请先启动服务，再访问：<br><span class="muted">node server.mjs → http://127.0.0.1:3081/api/report/\${encodeURIComponent(BOOK)}</span></div>\`;
+    return;
+  }
   askResult.innerHTML = '<div class="muted">正在定位…</div>';
   try {
     const r = await fetch(\`/api/report/\${encodeURIComponent(BOOK)}/ask\`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: q }),
     });
+    if (!r.ok) throw new Error(\`HTTP \${r.status}\`);
     const j = await r.json();
     let html = "";
     if (j.refined?.answer) html += \`<div class="answer">\${esc2(j.refined.answer)}</div>\`;
@@ -223,7 +229,7 @@ async function ask() {
     if (!html) html = \`<div class="err">\${esc2(j.error ?? "无结果")}</div>\`;
     askResult.innerHTML = html;
   } catch (e) {
-    askResult.innerHTML = \`<div class="err">请求失败：\${esc2(e.message)}</div>\`;
+    askResult.innerHTML = \`<div class="err">请求失败：\${esc2(e.message)}<br><span class="muted">请确认服务已启动（node server.mjs，端口 3081）</span></div>\`;
   }
 }
 </script>`;
