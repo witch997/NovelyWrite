@@ -59,6 +59,7 @@ import { startTask, listTasks, apiTaskRerun, apiTaskStale, killTask, hasRunningT
 import { scanBookFingerprints, diffFingerprints, readFingerprints } from "./task/fingerprint.mjs";
 import { decodeTextBuffer, checkTextHealthy } from "./shared/encoding.mjs";
 import { buildReport } from "./features/report/report.mjs";
+import { buildDemo } from "./features/report/demo.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -666,6 +667,11 @@ const ROUTES = [
   // 拆书地图：读 store 已有 JSON → 生成自包含 HTML（纯程序投影，零 LLM）
   { m: "GET", p: /^\/api\/report\/([^/]+)$/, h: (m) => {
       const { html } = buildReport(decodeURIComponent(m[1]));
+      return { __html: html };
+    } },
+  // 拆书 Demo：章节树三级下钻演示页（内嵌树+句子，自包含）
+  { m: "GET", p: /^\/api\/report\/([^/]+)\/demo$/, h: (m) => {
+      const { html } = buildDemo(decodeURIComponent(m[1]));
       return { __html: html };
     } },
   { m: "POST", p: /^\/api\/search$/, h: async (_m, body) => apiSearch(body) },
