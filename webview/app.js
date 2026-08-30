@@ -1003,20 +1003,22 @@
 
   /* ================= 拆书：生成拆书地图（读 store 已建库数据 → 新窗口展示） ================= */
   async function dismantleBook() {
-    const name = state.currentBook;
-    if (!name) { toast("请先选择一本书"); return; }
-    // 探测该书是否已建库（my 域优先）
+    // 拆书对象 = 参考书池勾选的书（1 本）；未勾选/多选给出提示
+    const checked = selectedRefBooks();
+    if (checked.length === 0) { toast("请先在参考书池勾选一本书再拆书"); return; }
+    if (checked.length > 1) { toast("拆书一次只支持一本书，请只勾选一本"); return; }
+    const name = checked[0];
+    // 探测该书是否已建库（两域）
     let hasProject = false;
     try {
       const d = await api("/api/projects");
-      const p = (d.projects || []).find((x) => x.name === name && x.domain === "my");
-      hasProject = Boolean(p);
+      hasProject = Boolean((d.projects || []).find((x) => x.name === name));
     } catch { /* 探测失败按未建库处理 */ }
     if (!hasProject) { toast(`《${name}》尚未建库，请先「建库标注」再拆书`); return; }
-    // 新窗口打开拆书地图（GET /api/report/:name 直出 HTML）
+    // 新窗口打开拆书看板（GET /api/report/:name 直出 HTML）
     const url = `/api/report/${encodeURIComponent(name)}`;
     window.open(url, "_blank");
-    toast(`正在生成《${name}》拆书地图…（新窗口）`);
+    toast(`正在生成《${name}》拆书看板…（新窗口）`);
   }
 
   /* ================= AI 写作流程 ================= */
