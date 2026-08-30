@@ -49,7 +49,12 @@ async function buildSynopsis(project, nodes) {
   // 调 LLM（全局 chat 配置；非流式；低温度保稳定）
   const cfg = loadChatConfig();
   const baseUrl = (cfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
-  const sys = "你是小说编辑。根据给定章节的剧情摘要，用一段话（120-200 字）总结全书梗概：概括主线、核心人物与整体走向，语言精炼、客观，不罗列章节。";
+  const sys = `你是小说编辑。根据给定章节的剧情摘要，用一段话（120-200 字）总结这些章节呈现的内容。
+硬性约束：
+- 【只用给定摘要】只总结摘要中明确出现的主线、人物与情节走向
+- 【禁止先验知识】即使你对这部作品非常熟悉（如它的结局、后续情节、人物最终命运），也【绝对禁止】把输入摘要中未出现的任何内容写进梗概——包括已知结局、人物命运、后文发展
+- 若摘要只覆盖全书开篇，就只总结开篇呈现的内容，不得预告后续
+语言精炼、客观，不罗列章节。`;
   const res = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cfg.apiKey}` },
@@ -175,7 +180,7 @@ main{max-width:760px;margin:0 auto;padding:44px 24px 60px}
   <main>
     <!-- 全书梗概（书名在栏内，无灰色小标题） -->
     <div class="synopsis">
-      <div class="book-title">《${esc(name)}》</div>
+      <div class="book-title">${esc(name.includes("《") ? name : `《${name}》`)}</div>
       <div class="b${synopsis ? "" : " empty"}">${synopsis ? esc(synopsis) : "（梗概生成失败" + (synopsisError ? "：" + esc(synopsisError) : "") + "）"}</div>
     </div>
 
