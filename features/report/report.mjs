@@ -46,22 +46,15 @@ async function buildSynopsis(project, nodes) {
   const cache = readJson(synopsisCacheFile(project));
   if (cache?.fingerprint === fp && cache?.text) return { text: cache.text, from: "cache" };
 
-  // 联网搜索 + 总结（Anthropic 兼容 Messages API + 原生 web_search 工具，与 dsh 的 web_search 同机制）
+  // 一次调用：联网搜索（解决模型知识时效）+ 前 10 章摘要 → 500 字全书梗概
+  // 目的：联网主要解决"大模型训练数据不更新"的时效问题；梗概 500 字左右、基本准确即可，不做严格结构约束
   const cfg = loadChatConfig();
   const baseUrl = "https://api.deepseek.com/anthropic/v1"; // Messages API 端点（与 chat/completions 不同）
-  const sys = `你是小说编辑。任务：为《${project}》生成拆书梗概。
-【流程】
-1. 【必须】先用联网搜索工具查询这部作品的【元信息】：作者、类型、题材定位、文学地位。
-2. 结合【搜索元信息】与【开篇章节摘要】（前 ${picked.length} 章实际剧情），用一段话（150-250 字）生成全书梗概。
-【输出结构（必须遵守）】
-- 开头：一句话交代作品定位（作者/类型/文学地位，来自搜索）——必须引用搜索元信息
-- 主体：概括【开篇章节摘要】中呈现的剧情走向
-【硬性约束】
-- 【剧情只用开篇摘要】剧情部分只能来自【开篇章节摘要】中的实际内容
-- 【禁止全书剧情】搜索返回的资料可能包含全书剧情概述/回目梗概（如"第X回发生什么"）——【绝对禁止】把搜索到的任何后续章节、结局、人物最终命运写进梗概；只允许引用搜索到的【元信息】（作者/类型/地位）
-- 【禁止先验虚构】不得编造摘要中未出现的具体情节细节
-- 若摘要只覆盖开篇，剧情部分就只总结开篇呈现的内容
-语言精炼、客观，输出一段话（不要标题、不要分节）。`;
+  const sys = `你是小说编辑。为《${project}》生成全书梗概。
+【流程】先用联网搜索工具查询这部作品的最新公开信息（如发布情况、简介），再结合前 ${picked.length} 章剧情摘要，综合生成全书梗概。
+【字数】全文 500 字左右（450-550 字）。输出连续文字，不要标题、不要列表、不要加粗，不介绍作者生平。
+【要求】概括全书内容走向：主线、核心人物、故事基调；以开篇章节摘要的实际剧情为基础，可结合常识自然延伸全书走向，基本准确即可。
+语言精炼、客观。`;
   const res = await fetch(`${baseUrl}/messages`, {
     method: "POST",
     headers: {
@@ -73,11 +66,10 @@ async function buildSynopsis(project, nodes) {
     body: JSON.stringify({
       model: cfg.model,
       max_tokens: 4096,
+      temperature: 0.8, // 较高温度 → 凝练综述而非机械罗列
       messages: [{
         role: "user",
-        content: [
-          { type: "text", text: `请搜索《${project}》的基本信息，并结合以下前 ${picked.length} 章剧情摘要生成全书梗概：\n\n${inputText}` },
-        ],
+        content: [{ type: "text", text: `请搜索《${project}》的最新公开信息，并结合前 ${picked.length} 章剧情摘要生成 500 字全书梗概：\n\n${inputText}` }],
       }],
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 1 }],
     }),
@@ -85,8 +77,19 @@ async function buildSynopsis(project, nodes) {
   if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
   // Messages 响应：text block 即梗概（搜索结果为 web_search_tool_result block，不计入）
-  const text = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
-  if (!text) throw new Error("LLM 返回空梗概");
+  const raw = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
+  if (!raw) throw new Error("LLM 返回空梗概");
+  // 轻清理（仅去 markdown 标记让显示干净，不截断——字数由 prompt 控制，直出 LLM 原文）
+  const text = raw
+    .replace(/^#{1,6}\s*.*$/gm, "")        // 去标题行
+    .replace(/^\s*(?:[-*|>\d.]+)\s+/gm, "") // 去列表/表格标记
+    .replace(/^>\s*/gm, "")                 // 去引用
+    .replace(/\*\*/g, "")                   // 去粗体标记
+    .replace(/\n{2,}/g, "\n")
+    .replace(/\n/g, "")                     // 合并为连续文本
+    .replace(/[ \t]+/g, " ")
+    .trim();
+  if (!text) throw new Error("LLM 返回空梗概（清理后为空）");
   fs.mkdirSync(path.dirname(synopsisCacheFile(project)), { recursive: true });
   fs.writeFileSync(synopsisCacheFile(project), JSON.stringify({ fingerprint: fp, text, builtAt: new Date().toISOString() }, null, 2) + "\n", "utf-8");
   return { text, from: "llm" };
