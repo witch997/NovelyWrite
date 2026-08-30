@@ -51,10 +51,8 @@ async function buildSynopsis(project, nodes) {
   const cfg = loadChatConfig();
   const baseUrl = "https://api.deepseek.com/anthropic/v1"; // Messages API 端点（与 chat/completions 不同）
   const sys = `你是小说编辑。为《${project}》生成全书梗概。
-【流程】先用联网搜索工具查询这部作品的最新公开信息（如发布情况、简介），再结合前 ${picked.length} 章剧情摘要，综合生成全书梗概。
-【字数】全文 500 字左右（450-550 字）。输出连续文字，不要标题、不要列表、不要加粗，不介绍作者生平。
-【要求】概括全书内容走向：主线、核心人物、故事基调；以开篇章节摘要的实际剧情为基础，可结合常识自然延伸全书走向，基本准确即可。
-语言精炼、客观。`;
+先联网搜索这部作品的题材与简介（忽略学术会议、研究动态类信息），再结合前 ${picked.length} 章剧情摘要综合概括。
+要求：500 字左右；纯文字输出（不要标题/列表/加粗）；不介绍作者生平；概括主线、核心人物、故事走向，基本准确即可。`;
   const res = await fetch(`${baseUrl}/messages`, {
     method: "POST",
     headers: {
@@ -69,7 +67,7 @@ async function buildSynopsis(project, nodes) {
       temperature: 0.8, // 较高温度 → 凝练综述而非机械罗列
       messages: [{
         role: "user",
-        content: [{ type: "text", text: `请搜索《${project}》的最新公开信息，并结合前 ${picked.length} 章剧情摘要生成 500 字全书梗概：\n\n${inputText}` }],
+        content: [{ type: "text", text: `搜索《${project}》的题材简介，结合前 ${picked.length} 章剧情摘要生成全书梗概。输出约 500 字（400-650 字），纯文字，不介绍作者生平。\n\n${inputText}` }],
       }],
       tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 1 }],
     }),
