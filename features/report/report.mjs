@@ -1,43 +1,34 @@
 #!/usr/bin/env node
 /**
- * report.mjs — 拆书地图生成器（features/report 模块）
+ * report.mjs — 拆书数据看板生成器（features/report 模块）
  *
- * 输入：store/<域>/<书>project/ 下的已有 JSON（章节标注 summary / 章节表 / 卷纲）
- * 输出：一份自包含 HTML（单栏，NovelyWrite 项目浅色风格）——纯程序投影，零 LLM，幂等。
+ * 输入：章节树（chapter-tree/，构建时增量更新）+ store（卷纲）
+ * 输出：一份自包含 HTML（NovelyWrite 浅色风格，数据看板）——纯程序投影，零 LLM，幂等。
  *
- * 布局（单栏纵向流）：
- *   顶栏：书名 / 统计
- *   ① 全书速览：书名 + 主线一句话
- *   ② 逐章精读：每章一个折叠卡（章标题 → summary 全文），默认折叠，点开即读
+ * 看板内容：
+ *   ① 统计卡：章节数 / 分镜数 / 句子数（+ 每章平均）
+ *   ② 分布：章节 function 分布（开端/推进/爆发…）、分镜 type 分布、悬念章数
+ *   ③ 主线卡（卷纲 isMain）
+ *   ④ 章节列表：每章卡可展开（summary + 分镜列表，分镜含句子数徽章）
  *
  * 原则：summary 是唯一权威事实；本模块只投影不篡改；缺数据段自动降级。
  *
  * 用法：
- *   node features/report/report.mjs --project=<书> [--out=<文件.html>]   # CLI 自测
+ *   node features/report/report.mjs --project=<书> [--out=<文件.html>]   # CLI 自检
  *   import { buildReport } from "./report.mjs"                           # server 调用
  */
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { projectRoot } from "../../shared/paths.mjs";
-import { buildChapterTree } from "./chapter-tree.mjs";
+import { buildChapterTree, loadChapterTreeIndex, loadChapterNode } from "./chapter-tree.mjs";
 
-const pad4 = (n) => String(n).padStart(4, "0");
-
-/** 安全读 JSON（不存在/非法 → null） */
-function readJson(p) {
-  try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return null; }
-}
-
-/** 章节标注路径（章节/第XXXX章.json） */
-function chapterJsonPath(root, n) {
-  return path.join(root, "章节", `第${pad4(n)}章.json`);
-}
+const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return null; } };
 
 /**
- * 生成拆书地图 HTML（单栏，NovelyWrite 浅色风格）
+ * 生成拆书数据看板 HTML
  * @param {string} project 书名（域自动探测：my 优先）
- * @returns {{html: string, project: string, root: string, stats: object}}
+ * @returns {{html: string, project: string, root: string, stats: object, tree: object}}
  */
 export function buildReport(project) {
   const root = projectRoot(project); // 不存在会抛 PROJECT_NOT_FOUND
@@ -47,42 +38,54 @@ export function buildReport(project) {
   let treeStats = null;
   try { treeStats = buildChapterTree(project); } catch (e) { treeStats = { error: e.message }; }
 
-  /* ---------- 数据读取（缺什么降级什么） ---------- */
-  const tableJson = readJson(path.join(root, "章节", "章节表.json"));
-  const chapters = tableJson?.chapters ?? [];
+  /* ---------- 数据装配（章节树 + 卷纲） ---------- */
+  const index = loadChapterTreeIndex(project);
+  const nodes = (index?.chapters ?? [])
+    .map((c) => loadChapterNode(project, c.num))
+    .filter(Boolean);
   const volume = readJson(path.join(root, "卷纲", "volume.json"));
   const targets = volume?.targets ?? [];
+  const mainTarget = targets.find((t) => t.isMain) ?? null;
 
-  // 单章标注（summary 是唯一权威）
-  const chapterInfos = [];
-  for (const c of chapters) {
-    const j = readJson(chapterJsonPath(root, c.num ?? c.number));
-    if (j) {
-      chapterInfos.push({
-        num: c.num ?? c.number,
-        title: c.title ?? j.chapter?.title ?? `第${c.num}章`,
-        summary: j.summary ?? "",
-      });
-    }
-  }
+  // 统计
+  const chapterCount = nodes.length;
+  const shotCount = nodes.reduce((a, n) => a + (n.shots?.length ?? 0), 0);
+  // 句子 id 每章重新编号（S1-S65），跨章不可全局去重 → 按章去重再累加
+  const sentenceCount = nodes.reduce((a, n) => a + new Set((n.shots ?? []).flatMap((s) => s.sentenceIds ?? [])).size, 0);
+  const suspenseChapters = nodes.filter((n) => (n.suspense ?? []).length).length;
+  const fnDist = {};
+  for (const n of nodes) fnDist[n.function || "未标注"] = (fnDist[n.function || "未标注"] ?? 0) + 1;
+  const typeDist = {};
+  for (const n of nodes) for (const s of n.shots ?? []) typeDist[s.type || "未知"] = (typeDist[s.type || "未知"] ?? 0) + 1;
 
-  /* ---------- 速览统计 ---------- */
   const stats = {
-    chapters: chapterInfos.length,
-    mainTarget: targets.find((t) => t.isMain) ?? null,
+    chapters: chapterCount, shots: shotCount, sentences: sentenceCount,
+    suspenseChapters, mainTarget,
+    avgShots: chapterCount ? (shotCount / chapterCount).toFixed(1) : 0,
+    avgSentences: chapterCount ? (sentenceCount / chapterCount).toFixed(1) : 0,
   };
 
-  /* ================= HTML 组装（NovelyWrite / DSH 浅色风格） ================= */
+  /* ================= HTML 组装（数据看板，NovelyWrite 浅色风格） ================= */
   const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  // 分布条（值 → 百分比条）
+  const bar = (dist, total) => Object.entries(dist)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => {
+      const pct = total ? (v / total * 100).toFixed(1) : 0;
+      return `<div class="dist-row"><span class="dist-k">${esc(k)}</span><div class="dist-bar"><div class="dist-fill" style="width:${pct}%"></div></div><span class="dist-v">${v} · ${pct}%</span></div>`;
+    }).join("");
+
+  const statCard = (v, k, extra = "") => `<div class="stat-card"><div class="v">${v}</div><div class="k">${k}</div>${extra ? `<div class="x">${extra}</div>` : ""}</div>`;
 
   const html = `<!DOCTYPE html>
 <html lang="zh-CN" data-theme="light">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>拆书 · ${esc(name)}</title>
+<title>拆书看板 · ${esc(name)}</title>
 <style>
-/* ===== NovelyWrite / DSH 风格（bluish 色阶 + deepseek 蓝，浅色主题） ===== */
+/* ===== NovelyWrite / DSH 浅色风格 ===== */
 :root{
   --n-50:#f8fafc;--n-75:#f1f5f9;--n-100:#e9eef5;--n-150:#dfe6ef;--n-200:#d3dbe6;
   --n-300:#b8c3d2;--n-400:#94a3b8;--n-500:#7587a0;--n-600:#5c6f88;--n-700:#47586f;
@@ -90,144 +93,140 @@ export function buildReport(project) {
   --brand-100:#dbeafe;--brand-400:#4176e6;--brand-500:#2563eb;--brand-600:#1d4ed8;
   --green-500:#22a55d;--green-100:#dcfce7;--amber-500:#d97706;--amber-100:#fef3c7;
   --red-500:#dc2626;--red-100:#fee2e2;
-  --ease:cubic-bezier(.4,0,.2,1);--dur:.2s;
-  --radius:8px;--radius-sm:6px;
-  --shadow-sm:0 1px 2px rgba(16,22,31,.06);
-  --shadow-md:0 4px 16px rgba(16,22,31,.1);
+  --ease:cubic-bezier(.4,0,.2,1);--dur:.2s;--radius:8px;--radius-sm:6px;
+  --shadow-sm:0 1px 2px rgba(16,22,31,.06);--shadow-md:0 4px 16px rgba(16,22,31,.1);
 }
 body[data-theme="light"]{
-  --bg-base:var(--n-50);--bg-module:#ffffff;--bg-hover:var(--n-75);
-  --bg-active:var(--brand-100);--border:var(--n-150);--border-strong:var(--n-200);
+  --bg-base:var(--n-50);--bg-module:#fff;--bg-hover:var(--n-75);--bg-active:var(--brand-100);
+  --border:var(--n-150);--border-strong:var(--n-200);
   --label-primary:var(--n-950);--label-secondary:var(--n-700);--label-tertiary:var(--n-400);
   --brand:var(--brand-500);--brand-hover:var(--brand-600);
-  --interactive-hover:rgba(38,49,72,.06);--code-bg:var(--n-75);
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
-  background:var(--bg-base);color:var(--label-primary);
-  min-height:100vh;-webkit-font-smoothing:antialiased;
-  transition:background var(--dur) var(--ease),color var(--dur) var(--ease);
-}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:var(--bg-base);color:var(--label-primary);min-height:100vh;-webkit-font-smoothing:antialiased}
 
-/* 词条头（wiki 风格） */
-.wiki-head{padding:20px 24px 14px;background:var(--bg-module);border-bottom:1px solid var(--border)}
-.site-name{font-size:11px;color:var(--label-tertiary);letter-spacing:1px}
-.article-title{font-size:30px;font-weight:700;margin:6px 0 2px;letter-spacing:1px}
-.article-sub{font-size:12px;color:var(--label-tertiary)}
+/* 顶栏 */
+.topbar{display:flex;align-items:baseline;gap:12px;padding:14px 24px;background:var(--bg-module);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:2}
+.topbar .brand{font-size:16px;font-weight:600}
+.topbar .brand small{color:var(--label-tertiary);font-weight:400;font-size:12px;margin-left:8px}
+.topbar .stat{color:var(--label-secondary);font-size:13px;margin-left:auto}
+.topbar .stat b{color:var(--label-primary)}
 
-/* 单栏主体 */
-main{max-width:900px;margin:0 auto;padding:22px 24px 60px}
+main{max-width:960px;margin:0 auto;padding:24px 22px 60px}
 
-/* 信息框 infobox（wiki 经典：右侧悬浮细边框表） */
-.infobox{
-  float:right;width:250px;margin:4px 0 16px 20px;
-  border:1px solid var(--border);border-radius:var(--radius);
-  background:var(--bg-module);font-size:12.5px;overflow:hidden;
-}
-.infobox .ib-title{
-  padding:8px 12px;text-align:center;font-weight:700;font-size:14px;
-  background:var(--brand-100);color:var(--label-primary);border-bottom:1px solid var(--border);
-}
-.infobox table{width:100%;border-collapse:collapse}
-.infobox th,.infobox td{padding:6px 10px;vertical-align:top;text-align:left}
-.infobox th{color:var(--label-tertiary);font-weight:400;white-space:nowrap;width:40%}
-.infobox td{color:var(--label-primary)}
-.infobox tr+tr th,.infobox tr+tr td{border-top:1px solid var(--border)}
+/* 统计卡 */
+.stat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+.stat-card{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:18px 14px;text-align:center;box-shadow:var(--shadow-sm)}
+.stat-card .v{font-size:30px;font-weight:700;color:var(--brand);letter-spacing:1px}
+.stat-card .k{font-size:12px;color:var(--label-secondary);margin-top:4px}
+.stat-card .x{font-size:11px;color:var(--label-tertiary);margin-top:6px}
 
-/* 目录 TOC */
-.toc{
-  border:1px solid var(--border);border-radius:var(--radius);
-  background:var(--bg-module);padding:12px 18px;margin-bottom:22px;
-  display:inline-block;min-width:240px;
-}
-.toc-title{font-weight:600;font-size:13px;margin-bottom:6px}
-.toc ol{margin:0;padding-left:22px}
-.toc li{font-size:13px;margin:3px 0}
-.toc a{color:var(--brand);text-decoration:none}
-.toc a:hover{text-decoration:underline}
+/* 卡片区（分布 + 主线） */
+.cards{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:18px}
+@media(max-width:720px){.cards{grid-template-columns:1fr}}
+.card{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow-sm)}
+.card-title{font-size:13px;font-weight:600;color:var(--label-secondary);margin-bottom:12px}
+.card-main{border-left:3px solid var(--brand)}
+.card-main .mt{font-size:14px;font-weight:600}
+.card-main .ms{display:inline-block;background:var(--bg-active);color:var(--brand);border-radius:999px;padding:0 8px;font-size:11px;margin-left:8px}
+.card-main .mn{color:var(--label-tertiary);font-size:12px;margin-top:8px;line-height:1.7}
 
-/* 正文章节标题（h2） */
-h2.sec{
-  font-size:19px;font-weight:600;margin:28px 0 14px;padding-bottom:6px;
-  border-bottom:1px solid var(--border-strong);
-}
-h2.sec .n{color:var(--label-tertiary);font-weight:400;margin-right:8px}
+/* 分布条 */
+.dist-row{display:flex;align-items:center;gap:10px;margin-bottom:7px;font-size:12px}
+.dist-k{width:72px;color:var(--label-secondary);flex-shrink:0;text-align:right}
+.dist-bar{flex:1;background:var(--n-100);border-radius:999px;height:14px;overflow:hidden}
+.dist-fill{height:100%;background:linear-gradient(90deg,var(--brand-400),var(--brand-500));border-radius:999px;transition:width .4s var(--ease)}
+.dist-v{color:var(--label-tertiary);font-size:11px;width:88px;flex-shrink:0}
 
-/* 逐章精读条目（wiki 列表风格） */
-.chapter{
-  border:1px solid var(--border);border-radius:var(--radius);
-  background:var(--bg-module);margin-bottom:8px;overflow:hidden;
-  box-shadow:var(--shadow-sm);transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease);
-}
+/* 章节列表 */
+.sec-title{font-size:15px;font-weight:600;margin:22px 2px 12px;color:var(--label-secondary)}
+.chapter{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;overflow:hidden;transition:border-color var(--dur) var(--ease),box-shadow var(--dur) var(--ease)}
 .chapter:hover{border-color:var(--border-strong)}
-.chapter[open]{border-color:var(--brand);box-shadow:var(--shadow-md)}
-.chapter summary{
-  cursor:pointer;padding:12px 18px;font-size:14px;
-  list-style:none;display:flex;align-items:center;gap:10px;user-select:none;
-}
-.chapter summary::-webkit-details-marker{display:none}
-.chapter summary .num{color:var(--label-tertiary);font-size:12px;flex-shrink:0}
-.chapter summary .t{color:var(--brand);font-weight:500}
-.chapter summary .t:hover{text-decoration:underline}
-.chapter summary::after{
-  content:"▸";margin-left:auto;color:var(--label-tertiary);
-  transition:transform var(--dur) var(--ease);
-}
-.chapter[open] summary::after{transform:rotate(90deg)}
-.chapter .summary{
-  padding:14px 18px 18px;font-size:14px;line-height:1.9;color:var(--label-primary);
-  border-top:1px solid var(--border);background:var(--n-50);
-}
-.chapter .empty{color:var(--label-tertiary);font-size:13px}
-.no-data{color:var(--label-tertiary);font-size:13px;padding:10px 2px}
-
-/* 页脚 */
-.footer{
-  margin-top:40px;padding-top:14px;border-top:1px solid var(--border);
-  color:var(--label-tertiary);font-size:11.5px;text-align:center;clear:both;
-}
+.chapter.open{border-color:var(--brand);box-shadow:var(--shadow-md)}
+.ch-head{cursor:pointer;padding:11px 16px;display:flex;align-items:center;gap:10px;user-select:none}
+.ch-head .num{color:var(--label-tertiary);font-size:12px;flex-shrink:0}
+.ch-head .t{font-weight:600;font-size:14px}
+.ch-head .fn{background:var(--bg-active);color:var(--brand);border-radius:999px;padding:0 8px;font-size:11px;flex-shrink:0}
+.ch-head .cnt{color:var(--label-tertiary);font-size:11px;flex-shrink:0}
+.ch-head .arrow{margin-left:auto;color:var(--label-tertiary);transition:transform var(--dur) var(--ease)}
+.chapter.open .ch-head .arrow{transform:rotate(90deg)}
+.ch-body{display:none;border-top:1px solid var(--border)}
+.chapter.open .ch-body{display:block}
+.ch-summary{padding:12px 16px;font-size:13.5px;line-height:1.85;color:var(--label-secondary);background:var(--n-50)}
+.shots{padding:8px 12px 12px}
+.shot{display:inline-block;background:var(--n-75);border:1px solid var(--border);border-radius:6px;padding:3px 10px;font-size:12px;margin:3px;color:var(--label-secondary)}
+.shot .st{color:var(--brand);font-weight:600;margin-right:4px}
+.no-data{color:var(--label-tertiary);font-size:13px;padding:8px 2px}
+.footer{text-align:center;color:var(--label-tertiary);font-size:11px;margin-top:36px}
 </style>
 </head>
 <body data-theme="light">
-  <div class="wiki-head">
-    <div class="site-name">NovelyWrite 拆书 · 自由阅读</div>
-    <div class="article-title">《${esc(name)}》</div>
-    <div class="article-sub">本文由拆书地图生成，内容为各章剧情摘要（summary 为唯一权威事实）</div>
-  </div>
+  <header class="topbar">
+    <div class="brand">拆书看板<small>${esc(name)}</small></div>
+    <div class="stat"><b>${stats.chapters}</b> 章 · <b>${stats.shots}</b> 分镜 · <b>${stats.sentences}</b> 句</div>
+  </header>
   <main>
-    <aside class="infobox">
-      <div class="ib-title">《${esc(name)}》</div>
-      <table>
-        <tr><th>章节</th><td>${stats.chapters} 章</td></tr>
-        <tr><th>主线</th><td>${stats.mainTarget ? `${esc(stats.mainTarget.target)}（${esc(stats.mainTarget.state)}）` : "—"}</td></tr>
-        ${stats.mainTarget?.evidenceChapters?.length ? `<tr><th>主线跨度</th><td>${stats.mainTarget.evidenceChapters.length} 章</td></tr>` : ""}
-      </table>
-    </aside>
+    <!-- ① 统计卡 -->
+    <div class="stat-grid">
+      ${statCard(stats.chapters, "章节", `平均 ${stats.avgSentences} 句/章`)}
+      ${statCard(stats.shots, "分镜", `平均 ${stats.avgShots} 镜/章`)}
+      ${statCard(stats.sentences, "句子", "")}
+      ${statCard(stats.suspenseChapters, "悬念章", "含 suspense 标注")}
+    </div>
 
-    <nav class="toc">
-      <div class="toc-title">目录</div>
-      <ol>
-        <li><a href="#overview">全书速览</a></li>
-        <li><a href="#chapters">逐章精读</a></li>
-      </ol>
-    </nav>
+    <!-- ② 分布 + 主线 -->
+    <div class="cards">
+      <div class="card">
+        <div class="card-title">章节功能分布（function）</div>
+        ${Object.keys(fnDist).length ? bar(fnDist, chapterCount) : `<div class="no-data">暂无 function 数据</div>`}
+      </div>
+      <div class="card">
+        <div class="card-title">分镜类型分布（type）</div>
+        ${Object.keys(typeDist).length ? bar(typeDist, shotCount) : `<div class="no-data">暂无分镜数据</div>`}
+      </div>
+      ${mainTarget ? `<div class="card card-main">
+        <div class="card-title">★ 主线</div>
+        <div class="mt">${esc(mainTarget.target)}<span class="ms">${esc(mainTarget.state)}</span></div>
+        <div class="mn">${esc(mainTarget.note ?? "")}</div>
+      </div>` : ""}
+    </div>
 
-    <h2 class="sec" id="overview"><span class="n">1</span>全书速览</h2>
-    <p style="font-size:14.5px;line-height:1.9">
-      《${esc(name)}》共 ${stats.chapters} 章。
-      ${stats.mainTarget ? `主线为「${esc(stats.mainTarget.target)}」，当前状态：${esc(stats.mainTarget.state)}。${stats.mainTarget.note ? esc(stats.mainTarget.note) : ""}` : "暂无主线数据。"}
-    </p>
-
-    <h2 class="sec" id="chapters"><span class="n">2</span>逐章精读</h2>
-    ${chapterInfos.length ? chapterInfos.map((c) => `
-      <details class="chapter">
-        <summary><span class="num">${c.num}</span><span class="t">${esc(c.title)}</span></summary>
-        <div class="summary">${c.summary ? esc(c.summary) : `<span class="empty">该章未标注 summary</span>`}</div>
-      </details>`).join("") : `<div class="no-data">暂无章节数据（先 annotate 建库）</div>`}
-
-    <div class="footer">本页由 NovelyWrite 拆书地图自动生成 · 数据源：章节标注（summary）· 纯程序投影，可随时重算</div>
+    <!-- ③ 章节列表（可展开看 summary + 分镜） -->
+    <div class="sec-title">逐章 · ${stats.chapters} 章（点开看 summary 与分镜）</div>
+    <div id="list"></div>
+    <div class="footer">NovelyWrite · 拆书看板 · 章节树 chapter-tree · summary 为唯一权威事实 · 纯程序投影</div>
   </main>
+<script>
+const CHAPTERS = ${JSON.stringify(nodes.map((n) => ({ num: n.num, title: n.title, function: n.function, summary: n.summary, shots: (n.shots ?? []).map((s) => ({ type: s.type, label: s.label, sentenceIds: (s.sentenceIds ?? []).length })) }))).replace(/</g, "\\u003c")};
+const list = document.getElementById("list");
+const esc2 = (s) => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+
+CHAPTERS.forEach((ch) => {
+  const el = document.createElement("div");
+  const shotsHtml = ch.shots.length
+    ? ch.shots.map((s) => \`<span class="shot"><span class="st">\${esc2(s.type)}</span>\${esc2(s.label)} · \${s.sentenceIds}句</span>\`).join("")
+    : '<div class="no-data">无分镜</div>';
+  el.innerHTML = \`
+    <div class="chapter" data-ch="\${ch.num}">
+      <div class="ch-head">
+        <span class="num">\${ch.num}</span>
+        <span class="t">\${esc2(ch.title)}</span>
+        \${ch.function ? \`<span class="fn">\${esc2(ch.function)}</span>\` : ""}
+        <span class="cnt">\${ch.shots.length} 镜</span>
+        <span class="arrow">▸</span>
+      </div>
+      <div class="ch-body">
+        <div class="ch-summary">\${esc2(ch.summary) || "（无 summary）"}</div>
+        <div class="shots">\${shotsHtml}</div>
+      </div>
+    </div>\`;
+  list.appendChild(el.firstElementChild);
+});
+list.addEventListener("click", (e) => {
+  const head = e.target.closest(".ch-head");
+  if (head) head.parentElement.classList.toggle("open");
+});
+</script>
 </body>
 </html>`;
 
@@ -247,9 +246,9 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith("report.mjs")) {
     const out = argVal("out") ?? path.join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "output", `${project}-拆书地图.html`);
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, html, "utf-8");
-    console.log(`✅ 拆书地图已生成: ${out}`);
-    console.log(`   统计: ${stats.chapters} 章${stats.mainTarget ? ` / 主线: ${stats.mainTarget.target}` : ""}`);
-    if (treeStats && !treeStats.error) console.log(`   章节树: ${treeStats.chapters} 章（重建 ${treeStats.rebuilt}，复用 ${treeStats.skipped}）→ ${treeStats.treeDir}`);
+    console.log(`✅ 拆书看板已生成: ${out}`);
+    console.log(`   统计: ${stats.chapters} 章 / ${stats.shots} 分镜 / ${stats.sentences} 句 / 悬念章 ${stats.suspenseChapters}`);
+    if (treeStats && !treeStats.error) console.log(`   章节树: ${treeStats.chapters} 章（重建 ${treeStats.rebuilt}，复用 ${treeStats.skipped}）`);
   } catch (e) {
     console.error(`❌ 生成失败: ${e.message}`);
     process.exit(1);
