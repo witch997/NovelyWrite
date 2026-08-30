@@ -18,18 +18,66 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { projectRoot } from "../../shared/paths.mjs";
+import { projectRoot, outputDir } from "../../shared/paths.mjs";
+import { loadChatConfig } from "../../shared/config.mjs";
 import { buildChapterTree, loadChapterTreeIndex, loadChapterNode } from "./chapter-tree.mjs";
 
 const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, "utf-8")); } catch { return null; } };
+const sha1 = (s) => crypto.createHash("sha1").update(String(s)).digest("hex").slice(0, 16);
+
+/** 梗概缓存文件（output/<书>/synopsis.json，带指纹：输入 summary 变了才重调 LLM） */
+function synopsisCacheFile(project) {
+  return path.join(outputDir, project, "synopsis.json");
+}
+
+/** 调 LLM 生成全书梗概（前 N 章 summary → 一段话），带指纹缓存 */
+async function buildSynopsis(project, nodes) {
+  const SYNOPSIS_CHAPTERS = 10;
+  const picked = nodes.slice(0, SYNOPSIS_CHAPTERS);
+  const inputText = picked
+    .map((n) => `第${n.num}章 ${String(n.summary ?? "").replace(/\s+/g, " ").trim()}`)
+    .filter((s) => s.trim().length > 4)
+    .join("\n");
+  if (!inputText.trim()) return { text: "", from: "none" };
+
+  const fp = sha1(inputText);
+  const cache = readJson(synopsisCacheFile(project));
+  if (cache?.fingerprint === fp && cache?.text) return { text: cache.text, from: "cache" };
+
+  // 调 LLM（全局 chat 配置；非流式；低温度保稳定）
+  const cfg = loadChatConfig();
+  const baseUrl = (cfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
+  const sys = "你是小说编辑。根据给定章节的剧情摘要，用一段话（120-200 字）总结全书梗概：概括主线、核心人物与整体走向，语言精炼、客观，不罗列章节。";
+  const res = await fetch(`${baseUrl}/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cfg.apiKey}` },
+    body: JSON.stringify({
+      model: cfg.model,
+      stream: false,
+      temperature: 0.3,
+      messages: [
+        { role: "system", content: sys },
+        { role: "user", content: `《${project}》前 ${picked.length} 章摘要：\n${inputText}` },
+      ],
+    }),
+  });
+  if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json();
+  const text = (data.choices?.[0]?.message?.content ?? "").trim();
+  if (!text) throw new Error("LLM 返回空梗概");
+  fs.mkdirSync(path.dirname(synopsisCacheFile(project)), { recursive: true });
+  fs.writeFileSync(synopsisCacheFile(project), JSON.stringify({ fingerprint: fp, text, builtAt: new Date().toISOString() }, null, 2) + "\n", "utf-8");
+  return { text, from: "llm" };
+}
 
 /**
  * 生成拆书看板 HTML
  * @param {string} project 书名（域自动探测：my 优先）
  * @returns {{html: string, project: string, root: string, stats: object, tree: object}}
  */
-export function buildReport(project) {
+export async function buildReport(project) {
   const root = projectRoot(project); // 不存在会抛 PROJECT_NOT_FOUND
   const name = project;
 
@@ -51,11 +99,12 @@ export function buildReport(project) {
   // 句子 id 每章重新编号（S1-S65），跨章不可全局去重 → 按章去重再累加
   const sentenceCount = nodes.reduce((a, n) => a + new Set((n.shots ?? []).flatMap((s) => s.sentenceIds ?? [])).size, 0);
 
-  // 全书梗概（刮削器式：聚合散落元数据为一段简介）
-  // 优先卷纲 goal（全卷目标，LLM 建库时生成，最像"简介"）；降级 mainTarget.note；再降级提示
-  const synopsis = volume?.goal?.trim()
-    || mainTarget?.note?.trim()
-    || "";
+  // 全书梗概：LLM 总结前 10 章 summary（不足取全部），指纹缓存（summary 变了才重调）
+  let synopsis = "", synopsisError = null;
+  try {
+    const r = await buildSynopsis(name, nodes);
+    synopsis = r.text;
+  } catch (e) { synopsisError = e.message; }
 
   const stats = { chapters: chapterCount, shots: shotCount, sentences: sentenceCount, mainTarget };
 
@@ -87,21 +136,21 @@ body[data-theme="light"]{
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:var(--bg-base);color:var(--label-primary);min-height:100vh;-webkit-font-smoothing:antialiased}
 
-main{max-width:760px;margin:0 auto;padding:40px 24px 60px}
+main{max-width:760px;margin:0 auto;padding:44px 24px 60px}
 
 /* 书名（全书梗概栏内） */
-.book-title{font-size:24px;font-weight:700;letter-spacing:2px;margin-bottom:12px}
+.book-title{font-size:26px;font-weight:700;letter-spacing:2px;margin-bottom:14px}
 
 /* 全书梗概 */
-.synopsis{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:22px 26px;margin-bottom:24px;box-shadow:var(--shadow-sm)}
-.synopsis .b{font-size:14.5px;line-height:2;color:var(--label-primary)}
+.synopsis{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:24px 28px;margin-bottom:26px;box-shadow:var(--shadow-sm)}
+.synopsis .b{font-size:15px;line-height:2.1;color:var(--label-primary)}
 .synopsis .b.empty{color:var(--label-tertiary);font-size:13px}
 
 /* 统计卡 */
-.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
-.stat-card{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:26px 14px;text-align:center;box-shadow:var(--shadow-sm)}
-.stat-card .v{font-size:38px;font-weight:700;color:var(--brand);letter-spacing:1px}
-.stat-card .k{font-size:13px;color:var(--label-secondary);margin-top:8px}
+.stat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.stat-card{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:28px 14px;text-align:center;box-shadow:var(--shadow-sm)}
+.stat-card .v{font-size:42px;font-weight:700;color:var(--brand);letter-spacing:1px}
+.stat-card .k{font-size:14px;color:var(--label-secondary);margin-top:8px}
 
 .footer{text-align:center;color:var(--label-tertiary);font-size:11px;margin-top:36px}
 </style>
@@ -111,7 +160,7 @@ main{max-width:760px;margin:0 auto;padding:40px 24px 60px}
     <!-- 全书梗概（书名在栏内，无灰色小标题） -->
     <div class="synopsis">
       <div class="book-title">《${esc(name)}》</div>
-      <div class="b${synopsis ? "" : " empty"}">${synopsis ? esc(synopsis) : "（暂无全书梗概，先跑 aggregate 生成卷纲）"}</div>
+      <div class="b${synopsis ? "" : " empty"}">${synopsis ? esc(synopsis) : `（梗概生成失败${synopsisError ? `：${esc(synopsisError)}` : ""}）`}</div>
     </div>
 
     <!-- 统计卡 -->
@@ -138,7 +187,7 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith("report.mjs")) {
   const project = argVal("project") ?? process.argv[2];
   if (!project) { console.error("用法: node features/report/report.mjs --project=<书> [--out=<文件.html>]"); process.exit(2); }
   try {
-    const { html, root, stats, tree: treeStats } = buildReport(project);
+    const { html, root, stats, tree: treeStats } = await buildReport(project);
     const out = argVal("out") ?? path.join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "output", `${project}-拆书地图.html`);
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, html, "utf-8");
