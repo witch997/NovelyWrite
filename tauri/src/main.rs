@@ -12,6 +12,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // 1. 启动 sidecar（SEA exe，--sidecar 模式：不开浏览器、无心跳、固定 3081）
+            //    （tauri-plugin-shell 已内置 CREATE_NO_WINDOW，sidecar 不弹控制台）
             let sidecar = app
                 .shell()
                 .sidecar("nw-server")?

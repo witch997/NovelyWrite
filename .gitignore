@@ -31,3 +31,5 @@ Thumbs.db
 *.log
 tauri/target/
 tauri/binaries/*.exe
+
+tauri/gen/
