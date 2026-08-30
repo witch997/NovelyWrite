@@ -5,6 +5,11 @@ description = "NovelyWrite AI 写作工作台（Tauri 壳）"
 authors = ["NovelyWrite"]
 edition = "2021"
 
+# 壳 exe 产物名：NovelyWrite.exe（与 SEA 浏览器版 NovelyWrite-browser.exe 区分）
+[[bin]]
+name = "NovelyWrite"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

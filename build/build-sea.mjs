@@ -31,10 +31,10 @@ execFileSync(rollupCmd[0], rollupCmd[1], { cwd: ROOT, stdio: "inherit" });
 console.log("[sea] 生成 blob（--experimental-sea-config）...");
 execFileSync(process.execPath, ["--experimental-sea-config", "sea-config.json"], { cwd: ROOT, stdio: "inherit" });
 
-// 3. 复制 node.exe → ../dist/NovelyWrite.exe
+// 3. 复制 node.exe → ../dist/NovelyWrite-browser.exe（浏览器模式独立版；Tauri 壳的 sidecar 另命名 nw-server）
 const distDir = path.join(ROOT, "..", "dist");
 fs.mkdirSync(distDir, { recursive: true });
-const outExe = path.join(distDir, "NovelyWrite.exe");
+const outExe = path.join(distDir, "NovelyWrite-browser.exe");
 fs.copyFileSync(process.execPath, outExe);
 console.log(`[sea] 已复制运行时 → ${outExe}`);
 
@@ -43,5 +43,5 @@ console.log("[sea] postject 注入 blob（npx postject，首次会下载）...")
 const fuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 const postjectArgs = ["--yes", "postject", outExe, "NODE_SEA_BLOB", path.join(ROOT, "sea-prep.blob"), "--sentinel-fuse", fuse];
 execFileSync(process.env.ComSpec || "cmd.exe", ["/c", "npx", ...postjectArgs], { cwd: ROOT, stdio: "inherit" });
-console.log("✅ 构建完成: dist/NovelyWrite.exe");
+console.log("✅ 构建完成: dist/NovelyWrite-browser.exe");
 console.log("   运行: 双击 exe → 自动启动服务并打开浏览器；数据落在 exe 旁（config/corpus/store/mybook/output/sessions）");
