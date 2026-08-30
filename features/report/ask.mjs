@@ -15,7 +15,6 @@
  *   node features/report/ask.mjs --project=<书> --q="问题"
  *   import { locateQuestions } from "./ask.mjs"
  */
-import path from "node:path";
 import { loadChatConfig } from "../../shared/config.mjs";
 import { buildChapterTree, loadChapterTreeIndex, loadChapterNode } from "./chapter-tree.mjs";
 
@@ -102,30 +101,4 @@ export async function locateQuestions(project, question) {
   catch (e) { error = e.message; }
 
   return { question, candidates, refined, error };
-}
-
-/* ================= CLI ================= */
-if (process.argv[1] && path.resolve(process.argv[1]).endsWith("ask.mjs")) {
-  const argVal = (n) => {
-    const a = process.argv.find((x) => x.startsWith(`--${n}=`));
-    return a ? a.slice(n.length + 3) : null;
-  };
-  const project = argVal("project") ?? process.argv[2];
-  const q = argVal("q") ?? process.argv[3];
-  if (!project || !q) { console.error("用法: node features/report/ask.mjs --project=<书> --q=\"问题\""); process.exit(2); }
-  try {
-    const r = await locateQuestions(project, q);
-    console.log(`问题: ${r.question}`);
-    console.log(`粗筛候选: ${r.candidates.length} 章`);
-    if (r.candidates.length) console.log(`  候选: ${r.candidates.slice(0, 8).map((c) => `第${c.num}章(${c.score})`).join(" ")}`);
-    if (r.refined) {
-      console.log(`精筛结果:`);
-      for (const ch of r.refined.chapters ?? []) console.log(`  → 第${ch.num}章: ${ch.reason}`);
-      if (r.refined.answer) console.log(`回答: ${r.refined.answer}`);
-    }
-    if (r.error) console.log(`精筛错误: ${r.error}`);
-  } catch (e) {
-    console.error(`❌ 失败: ${e.message}`);
-    process.exit(1);
-  }
 }

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "version": 1,
+  "identifier": "com.novelywrite.app",
+  "permissions": [
+    "core:default",
+    "shell:allow-spawn",
+    "shell:allow-kill",
+    "shell:allow-execute"
+  ]
+}

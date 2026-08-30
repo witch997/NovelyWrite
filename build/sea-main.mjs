@@ -49,16 +49,24 @@ if (runScript) {
   })();
 } else {
   // 双击启动：默认自动打开浏览器；3081 被占用(如源码版在跑)→ 自动换动态端口
+  // --sidecar：Tauri 壳模式——不开浏览器、无心跳（生命周期由壳管理）、固定 3081（壳窗口加载固定 URL）
+  const sidecar = process.argv.includes("--sidecar");
   (async () => {
-    process.argv.push("--open");
-    if (!process.argv.some((a) => a.startsWith("--port="))) {
-      const used = await new Promise((resolve) => {
-        const s = net.connect({ port: 3081, host: "127.0.0.1" });
-        s.on("connect", () => { s.destroy(); resolve(true); });
-        s.on("error", () => resolve(false));
-      });
-      if (used) process.argv.push("--port=0"); // 3081 被占 → 动态端口(必然空闲)
+    if (sidecar) {
+      if (!process.argv.some((a) => a.startsWith("--port="))) process.argv.push("--port=3081");
+      process.argv.push("--no-heartbeat");
+      serverMain();
+    } else {
+      process.argv.push("--open");
+      if (!process.argv.some((a) => a.startsWith("--port="))) {
+        const used = await new Promise((resolve) => {
+          const s = net.connect({ port: 3081, host: "127.0.0.1" });
+          s.on("connect", () => { s.destroy(); resolve(true); });
+          s.on("error", () => resolve(false));
+        });
+        if (used) process.argv.push("--port=0"); // 3081 被占 → 动态端口(必然空闲)
+      }
+      serverMain(); // 正常启动 HTTP 服务
     }
-    serverMain(); // 正常启动 HTTP 服务
   })();
 }

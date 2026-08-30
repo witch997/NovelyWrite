@@ -13,13 +13,11 @@
  * 原则：summary 是唯一权威事实；本模块只投影不篡改；缺数据段自动降级。
  *
  * 用法：
- *   node features/report/report.mjs --project=<书> [--out=<文件.html>]
  *   import { buildReport } from "./report.mjs"
  */
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { projectRoot, outputDir } from "../../shared/paths.mjs";
 import { loadChatConfig } from "../../shared/config.mjs";
 import { buildChapterTree, loadChapterTreeIndex, loadChapterNode } from "./chapter-tree.mjs";
@@ -256,26 +254,4 @@ async function ask() {
 </script>`;
 
   return { html, project: name, root, stats, tree: treeStats };
-}
-
-/* ================= CLI 自检 ================= */
-if (process.argv[1] && path.resolve(process.argv[1]).endsWith("report.mjs")) {
-  const argVal = (n) => {
-    const a = process.argv.find((x) => x.startsWith(`--${n}=`));
-    return a ? a.slice(n.length + 3) : null;
-  };
-  const project = argVal("project") ?? process.argv[2];
-  if (!project) { console.error("用法: node features/report/report.mjs --project=<书> [--out=<文件.html>]"); process.exit(2); }
-  try {
-    const { html, root, stats, tree: treeStats } = await buildReport(project);
-    const out = argVal("out") ?? path.join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "output", `${project}-拆书地图.html`);
-    fs.mkdirSync(path.dirname(out), { recursive: true });
-    fs.writeFileSync(out, html, "utf-8");
-    console.log(`✅ 拆书看板已生成: ${out}`);
-    console.log(`   统计: ${stats.chapters} 章 / ${stats.shots} 分镜 / ${stats.sentences} 句`);
-    if (treeStats && !treeStats.error) console.log(`   章节树: ${treeStats.chapters} 章（重建 ${treeStats.rebuilt}，复用 ${treeStats.skipped}）`);
-  } catch (e) {
-    console.error(`❌ 生成失败: ${e.message}`);
-    process.exit(1);
-  }
 }
