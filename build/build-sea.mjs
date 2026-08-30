@@ -43,5 +43,24 @@ console.log("[sea] postject 注入 blob（npx postject，首次会下载）...")
 const fuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 const postjectArgs = ["--yes", "postject", outExe, "NODE_SEA_BLOB", path.join(ROOT, "sea-prep.blob"), "--sentinel-fuse", fuse];
 execFileSync(process.env.ComSpec || "cmd.exe", ["/c", "npx", ...postjectArgs], { cwd: ROOT, stdio: "inherit" });
-console.log("✅ 构建完成: dist/NovelyWrite-browser.exe");
+
+// 5. PE subsystem 控制台(3) → GUI(2)：双击不弹命令行黑窗口
+//    （node.exe 默认 console 子系统；改 GUI 后无控制台，服务日志改走文件）
+console.log("[sea] 改 PE subsystem 3→2（GUI，双击不弹命令行窗口）...");
+{
+  const b = fs.readFileSync(outExe);
+  const e = b.readUInt32LE(0x3c);          // e_lfanew
+  const opt = e + 24;                      // OptionalHeader 起点
+  const subsystemOff = opt + 68;           // Subsystem（PE32/PE32+ 均在偏移 68）
+  const sub = b.readUInt16LE(subsystemOff);
+  if (sub !== 2) {
+    b.writeUInt16LE(2, subsystemOff);      // 2 = IMAGE_SUBSYSTEM_WINDOWS_GUI
+    fs.writeFileSync(outExe, b);
+    console.log(`  subsystem ${sub} → 2 ✓`);
+  } else {
+    console.log("  已是 GUI（2）");
+  }
+}
+
+console.log("✅ 构建完成: dist/NovelyWrite-browser.exe（GUI，双击无黑窗）");
 console.log("   运行: 双击 exe → 自动启动服务并打开浏览器；数据落在 exe 旁（config/corpus/store/mybook/output/sessions）");

@@ -40,6 +40,21 @@ const run = (cmd, args, cwd, env) => {
   execFileSync(cmd, args, { cwd, stdio: "inherit", env: { ...process.env, ...env } });
 };
 
+/** 把 exe 的 PE subsystem 改成 GUI(2)：双击不弹命令行黑窗口 */
+function fixGui(exePath) {
+  const b = fs.readFileSync(exePath);
+  const e = b.readUInt32LE(0x3c);       // e_lfanew
+  const off = e + 24 + 68;              // Subsystem 字段（PE32/PE32+ 均在偏移 68）
+  const sub = b.readUInt16LE(off);
+  if (sub !== 2) {
+    b.writeUInt16LE(2, off);            // 2 = IMAGE_SUBSYSTEM_WINDOWS_GUI
+    fs.writeFileSync(exePath, b);
+    console.log(`   ${path.basename(exePath)}: subsystem ${sub}→2 ✓`);
+    return true;
+  }
+  return false;
+}
+
 try {
   /* ---------- ① SEA 打包（浏览器版 + sidecar 源） ---------- */
   if (!noSea) {
@@ -84,6 +99,11 @@ try {
     fs.copyFileSync(src, path.join(targetDir, name));
     console.log(`   ${name} ✓`);
   }
+
+  // 确保壳 + sidecar 均为 GUI 子系统（gnu toolchain 下壳可能残留 console → 双击弹黑窗）
+  step("⑤ PE subsystem → GUI（防命令行黑窗）");
+  fixGui(path.join(targetDir, "NovelyWrite.exe"));
+  fixGui(path.join(targetDir, "nw-server.exe"));
 
   /* ---------- 完成 ---------- */
   console.log("\n✅ 桌面版打包完成");
