@@ -32,7 +32,7 @@ function synopsisCacheFile(project) {
   return path.join(outputDir, project, "synopsis.json");
 }
 
-/** 调 LLM 生成全书梗概（前 N 章 summary → 一段话），带指纹缓存 */
+/** 调 LLM 生成全书梗概：联网搜索作品信息 + 前 N 章 summary → 一段话（指纹缓存） */
 async function buildSynopsis(project, nodes) {
   const SYNOPSIS_CHAPTERS = 10;
   const picked = nodes.slice(0, SYNOPSIS_CHAPTERS);
@@ -46,31 +46,46 @@ async function buildSynopsis(project, nodes) {
   const cache = readJson(synopsisCacheFile(project));
   if (cache?.fingerprint === fp && cache?.text) return { text: cache.text, from: "cache" };
 
-  // 调 LLM（全局 chat 配置；非流式；低温度保稳定）
+  // 联网搜索 + 总结（Anthropic 兼容 Messages API + 原生 web_search 工具，与 dsh 的 web_search 同机制）
   const cfg = loadChatConfig();
-  const baseUrl = (cfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
-  const sys = `你是小说编辑。根据给定章节的剧情摘要，用一段话（120-200 字）总结这些章节呈现的内容。
-硬性约束：
-- 【只用给定摘要】只总结摘要中明确出现的主线、人物与情节走向
-- 【禁止先验知识】即使你对这部作品非常熟悉（如它的结局、后续情节、人物最终命运），也【绝对禁止】把输入摘要中未出现的任何内容写进梗概——包括已知结局、人物命运、后文发展
-- 若摘要只覆盖全书开篇，就只总结开篇呈现的内容，不得预告后续
-语言精炼、客观，不罗列章节。`;
-  const res = await fetch(`${baseUrl}/chat/completions`, {
+  const baseUrl = "https://api.deepseek.com/anthropic/v1"; // Messages API 端点（与 chat/completions 不同）
+  const sys = `你是小说编辑。任务：为《${project}》生成拆书梗概。
+【流程】
+1. 【必须】先用联网搜索工具查询这部作品的【元信息】：作者、类型、题材定位、文学地位。
+2. 结合【搜索元信息】与【开篇章节摘要】（前 ${picked.length} 章实际剧情），用一段话（150-250 字）生成全书梗概。
+【输出结构（必须遵守）】
+- 开头：一句话交代作品定位（作者/类型/文学地位，来自搜索）——必须引用搜索元信息
+- 主体：概括【开篇章节摘要】中呈现的剧情走向
+【硬性约束】
+- 【剧情只用开篇摘要】剧情部分只能来自【开篇章节摘要】中的实际内容
+- 【禁止全书剧情】搜索返回的资料可能包含全书剧情概述/回目梗概（如"第X回发生什么"）——【绝对禁止】把搜索到的任何后续章节、结局、人物最终命运写进梗概；只允许引用搜索到的【元信息】（作者/类型/地位）
+- 【禁止先验虚构】不得编造摘要中未出现的具体情节细节
+- 若摘要只覆盖开篇，剧情部分就只总结开篇呈现的内容
+语言精炼、客观，输出一段话（不要标题、不要分节）。`;
+  const res = await fetch(`${baseUrl}/messages`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cfg.apiKey}` },
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": cfg.apiKey,
+      "Authorization": `Bearer ${cfg.apiKey}`,
+      "anthropic-version": "2023-06-01",
+    },
     body: JSON.stringify({
       model: cfg.model,
-      stream: false,
-      temperature: 0.3,
-      messages: [
-        { role: "system", content: sys },
-        { role: "user", content: `《${project}》前 ${picked.length} 章摘要：\n${inputText}` },
-      ],
+      max_tokens: 4096,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: `请搜索《${project}》的基本信息，并结合以下前 ${picked.length} 章剧情摘要生成全书梗概：\n\n${inputText}` },
+        ],
+      }],
+      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 1 }],
     }),
   });
   if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
-  const text = (data.choices?.[0]?.message?.content ?? "").trim();
+  // Messages 响应：text block 即梗概（搜索结果为 web_search_tool_result block，不计入）
+  const text = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
   if (!text) throw new Error("LLM 返回空梗概");
   fs.mkdirSync(path.dirname(synopsisCacheFile(project)), { recursive: true });
   fs.writeFileSync(synopsisCacheFile(project), JSON.stringify({ fingerprint: fp, text, builtAt: new Date().toISOString() }, null, 2) + "\n", "utf-8");
