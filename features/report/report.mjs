@@ -20,6 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { projectRoot } from "../../shared/paths.mjs";
+import { buildChapterTree } from "./chapter-tree.mjs";
 
 const pad4 = (n) => String(n).padStart(4, "0");
 
@@ -41,6 +42,10 @@ function chapterJsonPath(root, n) {
 export function buildReport(project) {
   const root = projectRoot(project); // 不存在会抛 PROJECT_NOT_FOUND
   const name = project;
+
+  // 章节树：拆书时增量构建（单章指纹，只重建变了的章节点）
+  let treeStats = null;
+  try { treeStats = buildChapterTree(project); } catch (e) { treeStats = { error: e.message }; }
 
   /* ---------- 数据读取（缺什么降级什么） ---------- */
   const tableJson = readJson(path.join(root, "章节", "章节表.json"));
@@ -226,7 +231,7 @@ h2.sec .n{color:var(--label-tertiary);font-weight:400;margin-right:8px}
 </body>
 </html>`;
 
-  return { html, project: name, root, stats };
+  return { html, project: name, root, stats, tree: treeStats };
 }
 
 /* ================= CLI 自检 ================= */
@@ -238,12 +243,13 @@ if (process.argv[1] && path.resolve(process.argv[1]).endsWith("report.mjs")) {
   const project = argVal("project") ?? process.argv[2];
   if (!project) { console.error("用法: node features/report/report.mjs --project=<书> [--out=<文件.html>]"); process.exit(2); }
   try {
-    const { html, root, stats } = buildReport(project);
+    const { html, root, stats, tree: treeStats } = buildReport(project);
     const out = argVal("out") ?? path.join(fileURLToPath(new URL(".", import.meta.url)), "..", "..", "output", `${project}-拆书地图.html`);
     fs.mkdirSync(path.dirname(out), { recursive: true });
     fs.writeFileSync(out, html, "utf-8");
     console.log(`✅ 拆书地图已生成: ${out}`);
     console.log(`   统计: ${stats.chapters} 章${stats.mainTarget ? ` / 主线: ${stats.mainTarget.target}` : ""}`);
+    if (treeStats && !treeStats.error) console.log(`   章节树: ${treeStats.chapters} 章（重建 ${treeStats.rebuilt}，复用 ${treeStats.skipped}）→ ${treeStats.treeDir}`);
   } catch (e) {
     console.error(`❌ 生成失败: ${e.message}`);
     process.exit(1);
