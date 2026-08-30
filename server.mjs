@@ -60,6 +60,7 @@ import { scanBookFingerprints, diffFingerprints, readFingerprints } from "./task
 import { decodeTextBuffer, checkTextHealthy } from "./shared/encoding.mjs";
 import { buildReport } from "./features/report/report.mjs";
 import { buildDemo } from "./features/report/demo.mjs";
+import { locateQuestions } from "./features/report/ask.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -673,6 +674,11 @@ const ROUTES = [
   { m: "GET", p: /^\/api\/report\/([^/]+)\/demo$/, h: (m) => {
       const { html } = buildDemo(decodeURIComponent(m[1]));
       return { __html: html };
+    } },
+  // 拆书问答定位：问题 → 程序粗筛 + LLM 精筛 → 定位章节
+  { m: "POST", p: /^\/api\/report\/([^/]+)\/ask$/, h: async (m, body) => {
+      const r = await locateQuestions(decodeURIComponent(m[1]), body?.question ?? "");
+      return { ok: !r.error || r.candidates.length > 0, ...r };
     } },
   { m: "POST", p: /^\/api\/search$/, h: async (_m, body) => apiSearch(body) },
   { m: "GET", p: /^\/api\/config$/, h: () => apiConfigGet() },

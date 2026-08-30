@@ -152,6 +152,22 @@ main{max-width:760px;margin:0 auto;padding:44px 24px 60px}
 .stat-card .v{font-size:42px;font-weight:700;color:var(--brand);letter-spacing:1px}
 .stat-card .k{font-size:14px;color:var(--label-secondary);margin-top:8px}
 
+/* 问答定位 */
+.ask{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;margin-top:26px;box-shadow:var(--shadow-sm)}
+.ask .t{font-size:12px;font-weight:600;color:var(--label-tertiary);letter-spacing:1px;margin-bottom:10px}
+.ask-row{display:flex;gap:8px}
+.ask input{flex:1;background:var(--n-50);color:var(--label-primary);border:1px solid var(--border);border-radius:var(--radius-sm);padding:9px 12px;font-size:14px;font-family:inherit;outline:none}
+.ask input:focus{border-color:var(--brand)}
+.ask button{background:var(--brand);color:#fff;border:none;border-radius:var(--radius-sm);padding:9px 18px;font-size:14px;cursor:pointer;font-family:inherit}
+.ask button:hover{background:var(--brand-hover)}
+.ask-result{margin-top:12px;font-size:13.5px;line-height:1.8}
+.ask-result .hit{background:var(--bg-active);border-radius:6px;padding:8px 12px;margin-bottom:6px}
+.ask-result .hit b{color:var(--brand)}
+.ask-result .reason{color:var(--label-secondary);font-size:12.5px}
+.ask-result .answer{background:var(--n-50);border-left:3px solid var(--brand);padding:10px 14px;border-radius:6px;margin-bottom:8px}
+.ask-result .err{color:var(--red-500);font-size:13px}
+.ask-result .muted{color:var(--label-tertiary);font-size:12px}
+
 .footer{text-align:center;color:var(--label-tertiary);font-size:11px;margin-top:36px}
 </style>
 </head>
@@ -160,7 +176,7 @@ main{max-width:760px;margin:0 auto;padding:44px 24px 60px}
     <!-- 全书梗概（书名在栏内，无灰色小标题） -->
     <div class="synopsis">
       <div class="book-title">《${esc(name)}》</div>
-      <div class="b${synopsis ? "" : " empty"}">${synopsis ? esc(synopsis) : `（梗概生成失败${synopsisError ? `：${esc(synopsisError)}` : ""}）`}</div>
+      <div class="b${synopsis ? "" : " empty"}">${synopsis ? esc(synopsis) : "（梗概生成失败" + (synopsisError ? "：" + esc(synopsisError) : "") + "）"}</div>
     </div>
 
     <!-- 统计卡 -->
@@ -170,10 +186,47 @@ main{max-width:760px;margin:0 auto;padding:44px 24px 60px}
       <div class="stat-card"><div class="v">${stats.sentences}</div><div class="k">句子</div></div>
     </div>
 
+    <!-- 问答定位 -->
+    <div class="ask">
+      <div class="t">定位章节 · 提问</div>
+      <div class="ask-row">
+        <input id="askInput" placeholder="如：上校的真实身份是什么？" onkeydown="if(event.key==='Enter')ask()">
+        <button onclick="ask()">定位</button>
+      </div>
+      <div class="ask-result" id="askResult"></div>
+    </div>
+
     <div class="footer">NovelyWrite · 拆书看板 · 章节树 chapter-tree · summary 为唯一权威事实 · 纯程序投影</div>
   </main>
-</body>
-</html>`;
+<script>
+const BOOK = ${JSON.stringify(name).replace(/</g, "\\u003c")};
+const askInput = document.getElementById("askInput");
+const askResult = document.getElementById("askResult");
+const esc2 = (s) => String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+async function ask() {
+  const q = askInput.value.trim();
+  if (!q) return;
+  askResult.innerHTML = '<div class="muted">正在定位…</div>';
+  try {
+    const r = await fetch(\`/api/report/\${encodeURIComponent(BOOK)}/ask\`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: q }),
+    });
+    const j = await r.json();
+    let html = "";
+    if (j.refined?.answer) html += \`<div class="answer">\${esc2(j.refined.answer)}</div>\`;
+    if (j.refined?.chapters?.length) {
+      html += j.refined.chapters.map((c) => \`<div class="hit"><b>第\${c.num}章</b> \${esc2(c.reason ?? "")}</div>\`).join("");
+    } else if (j.candidates?.length) {
+      html += \`<div class="muted">LLM 未精筛，粗筛候选 \${j.candidates.length} 章：\${j.candidates.slice(0,5).map(c=>"第"+c.num+"章").join("、")}</div>\`;
+    }
+    if (!html) html = \`<div class="err">\${esc2(j.error ?? "无结果")}</div>\`;
+    askResult.innerHTML = html;
+  } catch (e) {
+    askResult.innerHTML = \`<div class="err">请求失败：\${esc2(e.message)}</div>\`;
+  }
+}
+</script>`;
 
   return { html, project: name, root, stats, tree: treeStats };
 }
