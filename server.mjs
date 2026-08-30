@@ -665,9 +665,9 @@ const ROUTES = [
   { m: "GET", p: /^\/api\/projects\/([^/]+)\/events$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "大事件", "event.json")) ?? { events: [] } },
   { m: "GET", p: /^\/api\/projects\/([^/]+)\/volumes$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "卷纲", "volume.json")) ?? { volumes: [] } },
   { m: "GET", p: /^\/api\/projects\/([^/]+)\/chapter-table$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "章节", "章节表.json")) ?? { chapters: [] } },
-  // 拆书地图：读 store 已有 JSON → 生成自包含 HTML（纯程序投影，零 LLM）
-  { m: "GET", p: /^\/api\/report\/([^/]+)$/, h: (m) => {
-      const { html } = buildReport(decodeURIComponent(m[1]));
+  // 拆书地图：读 store 已有 JSON → 生成自包含 HTML（纯程序投影 + LLM 梗概缓存）
+  { m: "GET", p: /^\/api\/report\/([^/]+)$/, h: async (m) => {
+      const { html } = await buildReport(decodeURIComponent(m[1]));
       return { __html: html };
     } },
   // 拆书 Demo：章节树三级下钻演示页（内嵌树+句子，自包含）
