@@ -89,13 +89,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hira
 
 main{max-width:760px;margin:0 auto;padding:40px 24px 60px}
 
-/* 书名（梗概上方） */
-.book-title{font-size:28px;font-weight:700;letter-spacing:2px;margin-bottom:20px}
+/* 书名（全书梗概栏内） */
+.book-title{font-size:24px;font-weight:700;letter-spacing:2px;margin-bottom:12px}
 
 /* 全书梗概 */
-.synopsis{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:20px 24px;margin-bottom:24px;box-shadow:var(--shadow-sm)}
-.synopsis .t{display:flex;align-items:baseline;justify-content:space-between;font-size:11px;font-weight:600;color:var(--label-tertiary);letter-spacing:2px;margin-bottom:10px}
-.synopsis .t .syn-stats{letter-spacing:0;font-weight:400;font-size:12px}
+.synopsis{background:var(--bg-module);border:1px solid var(--border);border-radius:var(--radius);padding:22px 26px;margin-bottom:24px;box-shadow:var(--shadow-sm)}
 .synopsis .b{font-size:14.5px;line-height:2;color:var(--label-primary)}
 .synopsis .b.empty{color:var(--label-tertiary);font-size:13px}
 
@@ -110,12 +108,9 @@ main{max-width:760px;margin:0 auto;padding:40px 24px 60px}
 </head>
 <body data-theme="light">
   <main>
-    <!-- 书名 -->
-    <div class="book-title">《${esc(name)}》</div>
-
-    <!-- 全书梗概（统计并入栏内） -->
+    <!-- 全书梗概（书名在栏内，无灰色小标题） -->
     <div class="synopsis">
-      <div class="t"><span>全书梗概</span><span class="syn-stats">${stats.chapters} 章 · ${stats.shots} 分镜 · ${stats.sentences} 句</span></div>
+      <div class="book-title">《${esc(name)}》</div>
       <div class="b${synopsis ? "" : " empty"}">${synopsis ? esc(synopsis) : "（暂无全书梗概，先跑 aggregate 生成卷纲）"}</div>
     </div>
 
