@@ -5,7 +5,7 @@ AI 辅助小说写作工具链：把小说原文拆成可检索的结构化知�
 当前开发主线：
 `拆书建库（语料 → 结构化标注）→ 三通道参考召回 → 参考书风格跟随写作 → 自动聚合/向量/头文档`
 
-**技术标签**：Node ≥ 18 ｜ 零第三方运行时依赖 ｜ node:http 内置 Web ｜ SEA 单文件 exe（Windows）｜ .app 包（macOS，CI 自动构建）｜ 三通道 RAG（label / token / vec）
+**技术标签**：Node ≥ 18 ｜ 零第三方运行时依赖 ｜ node:http 内置 Web ｜ **Tauri 桌面版 + SEA 单文件 exe（Windows）** ｜ .app 包（macOS，CI 自动构建）｜ 三通道 RAG（label / token / vec）
 
 ## ✨ 项目简介
 
@@ -61,10 +61,11 @@ AI 辅助小说写作工具链：把小说原文拆成可检索的结构化知�
 - 排版硬规范（短段 / 对话独占成段）不受风格跟随影响，任何文风都保持网文排版
 - 成稿直显 → 一键插入写作栏 → 自动保存，产出按会话归档
 
-### 4. 写作工作台（Web，四栏）
+### 4. 写作工作台（Web，三栏）+ 拆书视图（两栏）
 
-- 左：书 / 章节大纲｜中左：写作台｜中右：AI 成稿 final（只读 + 插入）｜右：AI 参考（输入 + 参考书池）
-- 全栏可拖拽调宽，成稿栏可清空
+- **写作工作台**：左：书 / 章节大纲｜中：写作台 + AI 成稿｜右：AI 参考（输入 + 参考书池）；全栏可拖拽调宽（中栏 flex 自动铺满）
+- **拆书视图**（首页 · 拆书）：两栏——左 = 我的书（mybook，每条目「建库标注 + 拆书」），右 = 外部知识库（exproject，进度 / 缺章 / 就绪提示，「建库标注 + 拆书」）
+- **导入参考书语料**：读取外部语料 → 复制到 corpus + 生成章节清单 + 建 exproject 文件夹（仅落库，不自动标注）；标注由条目上的「建库标注」按钮按需触发
 - **参考书池**：搜索过滤 + 排序（拼音 / 时间）+ 域前缀（【我的】/【外部】）+ 📌 置顶
 - 模型选择器（写作 / 建库 / 向量独立 API），定时自动保存，设置面板
 
@@ -81,9 +82,10 @@ AI 辅助小说写作工具链：把小说原文拆成可检索的结构化知�
 - 失败率 >30% 熔断停止重试；聚合 / 向量 / 索引增量幂等可重入
 - WebUI 心跳：页面关闭 60s 后服务器自动退出（不驻留后台）
 
-### 7. 单文件分发（Windows / macOS）
+### 7. 桌面版分发（Windows 原生窗口 / 单文件 / macOS）
 
-- **Windows**：rollup bundle + 官方 node:sea + postject → `dist/NovelyWrite.exe`（~89MB），双击启动并自动打开浏览器，数据落在 exe 旁
+- **Windows 桌面版（推荐）**：`build/build-desktop.mjs` 一键打包 **Tauri 原生窗口壳 + SEA sidecar** → `dist/desktop/NovelyWrite.exe`（原生窗口，跟随系统 DPI，最小窗口 1200×700 保证三栏完整；依赖仅 WebView2Loader.dll）
+- **Windows 浏览器版（单文件）**：SEA 打包 → `dist/NovelyWrite-browser.exe`（~89MB），双击启动并自动打开浏览器，数据落在 exe 旁
 - **macOS**：`build/build-mac.mjs` → `NovelyWrite.app`；无 mac 机器可用 GitHub Actions 自动构建（Actions 页面下载）
 
 ## 典型使用路径
@@ -97,10 +99,13 @@ AI 辅助小说写作工具链：把小说原文拆成可检索的结构化知�
 
 ## 快速开始
 
-### 方式一：单文件 exe（推荐，无需安装 Node）
+### 方式一：桌面版 / 单文件 exe（推荐，无需安装 Node）
 
-1. 从 Release 下载 `NovelyWrite.exe`（Windows）或 Actions 下载 `NovelyWrite.app`（macOS）。
-2. **双击** → 自动启动服务并打开浏览器工作台。
+1. 从 Release 下载：
+   - **Windows 桌面版**：`NovelyWrite.exe`（原生窗口）+ 同目录 `nw-server.exe` + `WebView2Loader.dll`（解压到同一文件夹，双击 `NovelyWrite.exe`）
+   - **Windows 浏览器版**：`NovelyWrite-browser.exe`（单文件，双击自动开浏览器）
+   - **macOS**：`NovelyWrite.app`（Actions 下载）
+2. **双击启动** → 自动打开写作工作台。
 3. 数据（config / corpus / store / mybook / sessions / output）自动生成在 exe 旁；整文件夹拷走即迁移，更新只换 exe。
 
 ### 方式二：源码运行
@@ -160,8 +165,9 @@ NovelyWrite/
 ├── features/               # L4 功能层
 │   └── shot-writing/       # 分镜写作（preprocess / recall / writedraft）
 ├── shared/                 # 公共模块（路径 / 配置 / LLM / 错误 / 任务）
-├── build/                  # 打包（sea-main / sea-config / build-sea / build-mac）
-├── dist/                   # 打包产物（NovelyWrite.exe，不入库）
+├── build/                  # 打包（sea-main / sea-config / build-sea / build-mac / build-desktop）
+├── tauri/                  # Tauri 桌面壳（原生窗口 + SEA sidecar，src/main.rs + tauri.conf.json）
+├── dist/                   # 打包产物（desktop/ 桌面版 + NovelyWrite-browser.exe，不入库）
 ├── config.json             # 本地配置（不入库）
 ├── corpus/                 # 用户语料（自备，不提交）
 ├── store/                  # 标注数据 / 派生索引（myproject / exproject，不提交）
