@@ -1,4 +1,5 @@
-#!/usr/bin/env node
+﻿#!/usr/bin/env node
+// v0.8.0 — mac 构建脚本（2026-08-31 更新触发 Actions 重建）
 /**
  * build-mac.mjs — macOS 单文件应用构建（rollup bundle → 官方 node:sea → postject → .app 打包）
  *
@@ -106,3 +107,4 @@ console.log(`  裸二进制: ${bareBin}`);
 console.log(`\n运行: 双击 NovelyWrite.app → 自动启动服务并打开浏览器；数据落在 dist/ 旁`);
 console.log(`Gatekeeper 提示时执行: xattr -cr "${appDir}"`);
 console.log(`（本脚本在 Windows 上仅验证构建流程前 4 步，.app 结构需在 macOS 上生成确认）`);
+
