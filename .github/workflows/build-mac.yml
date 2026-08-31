@@ -56,3 +56,12 @@ jobs:
           path: dist/NovelyWrite-mac.zip
           if-no-files-found: error
           retention-days: 30
+
+      # 打 tag（vX.Y.Z）时自动发布到 GitHub Release（公开下载，无需登录）
+      # 说明：push 事件的 paths 过滤只对分支生效，tag 推送不受限，因此打 tag 必触发本 workflow
+      - name: 发布到 GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/NovelyWrite-mac.zip
+          fail_on_unmatched_files: false
