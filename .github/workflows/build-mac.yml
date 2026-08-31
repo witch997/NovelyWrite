@@ -19,6 +19,8 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    permissions:
+      contents: write  # 允许本 workflow 创建/更新 Release（需仓库设置允许 write）
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
