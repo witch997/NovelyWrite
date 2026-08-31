@@ -10,6 +10,7 @@ on:
         default: ""
   push:
     branches: [main]
+    tags: ['v*']   # 打 tag（vX.Y.Z）推送也触发——用于自动发布 Release
     paths:
       - 'webview/**'
       - 'server.mjs'
