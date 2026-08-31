@@ -49,7 +49,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, outputDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs, createProject, isSeaRuntime, writingSessionDir, runScriptArgs } from "./shared/paths.mjs";
+import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, outputDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs, createProject, isSeaRuntime, writingSessionDir, runScriptArgs, exprojectDir } from "./shared/paths.mjs";
 import { loadChatConfig, loadConfigSummary, loadRawConfig } from "./shared/config.mjs";
 import { retrieve } from "./retriever/retriever.mjs";
 import { NovelyError, report } from "./shared/errors.mjs";
@@ -83,7 +83,7 @@ function readJsonSafe(p) {
 function getBody(req) {
   return new Promise((resolve) => {
     let data = "";
-    req.on("data", (c) => { data += c; if (data.length > 2e6) req.destroy(); });
+    req.on("data", (c) => { data += c; if (data.length > 64e6) req.destroy(); }); // 上限 64MB（语料 base64 膨胀 ~4/3，容纳大文件）
     req.on("end", () => { try { resolve(data ? JSON.parse(data) : {}); } catch { resolve({}); } });
     req.on("error", () => resolve({}));
   });
@@ -93,6 +93,19 @@ const SHOT_TYPES = ["信息", "对话", "心理", "动作", "事件", "环境"];
 
 /* ================= API 实现 ================= */
 
+/** corpus 文件原始字节（右栏建库标注自动取语料用；文件名白名单防穿越） */
+function apiCorpusFile(filename) {
+  const name = String(filename ?? "").trim();
+  if (!name || !/^[\u4e00-\u9fa5A-Za-z0-9_·《》（）()\-]+\.txt$/.test(name) || name.includes("..")) {
+    throw new NovelyError("ARG_INVALID", { context: { field: "filename", value: name, rule: "corpus 下纯文本文件名" } });
+  }
+  const p = path.join(corpusDir, name);
+  if (!p.startsWith(corpusDir) || !fs.existsSync(p) || !fs.statSync(p).isFile()) {
+    throw new NovelyError("NOT_FOUND", { context: { file: name, dir: "corpus" } });
+  }
+  return { __binary: fs.readFileSync(p) };
+}
+
 /** 项目列表（两域 + 进度 + pending 未完成章提示） */
 function apiProjects() {
   const out = [];
@@ -100,9 +113,22 @@ function apiProjects() {
     const domain = domainOf(project);
     const meta = readJsonSafe(path.join(projectRoot(project), "project-meta.json"));
     const pending = readJsonSafe(path.join(projectRoot(project), "pending.json"));
+    // ex 域：检查 corpus 备份 / 分章清单 / exproject 文件夹 齐全度（右栏条目提示用）
+    let ready = null, missing = [];
+    if (domain === DOMAIN.EX) {
+      const hasCorpus = fs.existsSync(path.join(corpusDir, `${project}-语料.txt`));
+      const hasList = fs.existsSync(path.join(corpusDir, `${project}-章节清单.csv`));
+      const hasProject = fs.existsSync(exprojectDir) && fs.existsSync(path.join(exprojectDir, `${project}project`));
+      ready = hasCorpus && hasList && hasProject;
+      if (!hasCorpus) missing.push("corpus 语料");
+      if (!hasList) missing.push("章节清单");
+      if (!hasProject) missing.push("exproject 文件夹");
+    }
     out.push({
       name: project,
       domain,
+      ready, // ex 域：语料/清单/exproject 是否齐全（my 域为 null）
+      missing, // ex 域：缺失项（my 域为空）
       meta: meta
         ? {
             chaptersAnnotated: meta.counts?.chaptersAnnotated ?? 0,
@@ -318,12 +344,17 @@ function scanChapters(dir) {
 }
 const chapterFile = (dir, num) => path.join(dir, `第${pad4(num)}章.md`);
 
-/** GET /api/books — 我的书列表（书名 + 章节数 + 最近更新） */
+/** GET /api/books — 我的书列表（书名 + 章节数 + 总字数 + 最近更新） */
 function apiBooks() {
   return {
     books: listProjects(DOMAIN.MY).map((name) => {
       const chapters = scanChapters(bookDir(name));
-      return { name, chapters: chapters.length, updatedAt: chapters.at(-1)?.updatedAt ?? null };
+      return {
+        name,
+        chapters: chapters.length,
+        chars: chapters.reduce((s, c) => s + (c.chars || 0), 0), // 全书总字数（含标点）
+        updatedAt: chapters.at(-1)?.updatedAt ?? null,
+      };
     }),
   };
 }
@@ -571,6 +602,7 @@ function synthCorpusFromMybook(base) {
 async function apiImportBook(body) {
   const domain = body?.domain === "my" ? DOMAIN.MY : DOMAIN.EX; // 默认外部（向后兼容）
   let base;
+  let encNote = null; // 编码说明（顶层声明：658 行 return 需在块外访问）
   let changeInfo = null; // my 域原稿变更检测结果（changed/newChs/deleted）
   if (domain === DOMAIN.MY) {
     // 我的书：从 mybook 原稿合成语料 + 章节清单（不依赖上传 txt）
@@ -593,16 +625,18 @@ async function apiImportBook(body) {
     // 外部书：上传语料 txt → 编码检测（UTF-8/GBK 强制转换）→ 保存 → 自动生成章节清单
     const filename = (body?.filename ?? "").trim();
     const content = body?.content;
+    console.log(`[import-book/debug] filename="${filename}" from=${body?.from} to=${body?.to} pending=${body?.pending} b64len=${(body?.contentB64 ?? "").length}`);
     if (!filename || (typeof content !== "string" && !body?.contentB64) || (typeof content === "string" && !content.trim())) {
       throw new NovelyError("ARG_REQUIRED", { context: { field: "filename|content" } });
     }
     base = filename.replace(/\.txt$/i, "").replace(/-语料$/, "").trim();
+    console.log(`[import-book/debug2] base="${base}" matches=${CORPUS_NAME_RE.test(base)} len=${base.length}`);
     if (!base || !CORPUS_NAME_RE.test(base)) {
       throw new NovelyError("ARG_INVALID", { context: { field: "filename", value: filename, rule: "仅中文/字母/数字等，去 .txt 后缀" } });
     }
     // 1. 编码检测 + 强制转换：优先原始字节（contentB64，前端 FileReader 传），
     //    旧版字符串 content 兼容（已按 UTF-8 解码过，仅做乱码体检）
-    let corpusText, encNote;
+    let corpusText; // encNote 已在函数顶层声明（let）
     if (typeof body?.contentB64 === "string" && body.contentB64) {
       const r = decodeTextBuffer(Buffer.from(body.contentB64, "base64"));
       if (!r.ok) throw new NovelyError("ARG_INVALID", { context: { field: "content", reason: r.error } });
@@ -631,6 +665,15 @@ async function apiImportBook(body) {
       child.on("error", reject);
       child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(errMsg.trim() || `gen-chapter-list 退出码 ${code}`))));
     });
+    // 2.5 仅导入模式（前端「导入参考书语料」：复制语料+分章+建 exproject 文件夹，不启动标注）
+    if (body?.annotate === false) {
+      // 幂等建项目骨架（已存在不报错）：exproject/<书>project + 语料分章目录
+      const projDir = path.join(exprojectDir, `${base}project`);
+      fs.mkdirSync(projDir, { recursive: true });
+      fs.mkdirSync(path.join(projDir, "语料分章"), { recursive: true });
+      console.log(`[import-book] ${base}: 仅导入完成（语料+清单+exproject 骨架）`);
+      return { ok: true, name: base, domain, imported: true, taskId: null, corpus: `${base}-语料.txt`, list: `${base}-章节清单.csv`, encoding: encNote ?? null };
+    }
   }
   // 3. 启动建库任务（注册表驱动：startTask(kind, body)）
   const from = Number(body.from);
@@ -654,6 +697,7 @@ async function apiImportBook(body) {
 /* ================= 路由 ================= */
 const ROUTES = [
   { m: "GET", p: /^\/api\/projects$/, h: () => apiProjects() },
+  { m: "GET", p: /^\/api\/corpus\/([^/]+)$/, h: (m) => apiCorpusFile(decodeURIComponent(m[1])) },
   { m: "GET", p: /^\/api\/books$/, h: () => apiBooks() },
   { m: "POST", p: /^\/api\/books$/, h: (_m, b) => apiCreateBook(b) },
   { m: "GET", p: /^\/api\/books\/([^/]+)$/, h: (m) => apiBookDetail(decodeURIComponent(m[1])) },
@@ -703,6 +747,15 @@ const ROUTES = [
   { m: "POST", p: /^\/api\/tasks\/writedraft$/, h: (_m, b) => startTask("writedraft", b) },
   { m: "GET", p: /^\/api\/sessions\/([^/]+)\/final$/, h: (m) => apiSessionFinal(decodeURIComponent(m[1])) },
   { m: "POST", p: /^\/api\/tasks\/import-book$/, h: (_m, b) => apiImportBook(b) },
+  // 调试：拖拽诊断日志（Tauri/WebView2 缩放坐标系排查用，临时端点）
+  { m: "POST", p: /^\/api\/debug\/drag$/, h: (_m, b) => {
+      try {
+        const f = path.join(storeDir, "_debug-drag.log");
+        const line = JSON.stringify({ t: new Date().toISOString(), ...b }) + "\n";
+        fs.appendFileSync(f, line, "utf-8");
+      } catch { /* 忽略写日志错误 */ }
+      return { ok: true };
+    } },
 ];
 
 /* ================= 静态页（内置最小 HTML，方便直接浏览器打开） ================= */
@@ -856,6 +909,11 @@ const server = http.createServer(async (req, res) => {
       if (data && data.__html) { // HTML 直出（拆书地图等）
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(data.__html);
+        return;
+      }
+      if (data && data.__binary) { // 二进制直出（corpus 原始字节等）
+        res.writeHead(200, { "Content-Type": "application/octet-stream", "Cache-Control": "no-store" });
+        res.end(data.__binary);
         return;
       }
       json(res, 200, data);

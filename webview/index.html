@@ -8,26 +8,38 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<!-- ===== 顶栏：logo + 模型选择器 + 设置 ===== -->
-<header class="topbar">
-  <div class="topbar-left">
-    <span class="brand">✍ NovelyWrite</span>
-  </div>
-  <div class="topbar-right">
-    <span class="env-status" id="envStatus">配置检测中…</span>
-    <select id="modelSelect" class="model-select" title="写作模型"></select>
-    <button id="btnSettings" class="btn" title="设置">⚙ 设置</button>
-  </div>
-</header>
+<!-- ===== 标签栏：logo + 首页固定 + 动态标签（写作工作台/拆书） ===== -->
+<div class="tabbar" id="tabbar">
+  <div class="tabbar-brand" id="tabbarBrand" title="NovelyWrite">✍ NovelyWrite</div>
+  <div class="tab tab-active" data-tab="home" onclick="window.__switchTab('home')">🏠 首页</div>
+  <div class="tabbar-dynamic" id="tabbarDynamic"></div>
+</div>
 
+<!-- ===== 首页视图（默认）：左侧功能导航 + 右侧内容区 ===== -->
+<div id="pageHome" class="page">
+  <aside class="home-nav">
+    <div class="home-nav-title">功能</div>
+    <div class="nav-item nav-active" data-homeview="works" onclick="window.__homeNav('works')">📖 小说作品</div>
+    <div class="nav-item" data-homeview="dismantle" onclick="window.__homeNav('dismantle')">🔍 拆书</div>
+    <!-- 功能区底部：LLM 状态 + 设置 -->
+    <div class="home-nav-spacer"></div>
+    <div class="home-nav-section">系统</div>
+    <div class="env-status env-status-nav" id="envStatus">配置检测中…</div>
+    <button id="btnSettings" class="nav-item nav-item-action" title="设置">⚙ 设置</button>
+  </aside>
+  <section class="home-content" id="homeContent">
+    <div class="placeholder">加载中…</div>
+  </section>
+</div>
+
+<!-- ===== 写作工作台视图（点书后显示）：现有四栏整体搬入 ===== -->
+<div id="pageWorkspace" class="page" style="display:none">
 <!-- ===== 三栏主体（可拖拽调宽） ===== -->
 <main class="layout">
   <!-- 左栏：书选择（上一级）→ 章选择 + 新建章 -->
   <aside class="pane pane-left" id="paneLeft">
     <div class="book-bar">
-      <select id="bookSelect" class="book-select" title="选择我的书"></select>
-      <button id="btnAnnotateBook" class="btn btn-sm" title="对我的书建库标注（mybook 原稿 → 语料 → 标注 → 向量 → 聚合）">建库标注</button>
-      <button id="btnNewBook" class="btn btn-sm" title="新建书">+ 书</button>
+      <div id="currentBookName" class="book-name" title="当前书"></div>
     </div>
     <div class="pane-header">
       <span>章节</span>
@@ -86,28 +98,25 @@
       </div>
       <div class="splitter-h" data-split="aiInput"></div>
       <div class="ai-sec" id="aiRefSec">
-        <div class="ref-pool-title">
-          <span class="ref-pool-tools">
-            <button id="btnImportBook" class="btn btn-sm" title="导入语料 txt 并建库">导入</button>
-            <input id="refPoolSearch" class="input ref-search" placeholder="🔍 筛选…" autocomplete="off">
-            <button id="btnSearchPool" class="btn btn-sm" title="按关键字筛选参考书（回车同效）">搜索</button>
-          </span>
-        </div>
         <input type="file" id="bookFileInput" accept=".txt" style="display:none">
-        <div class="ref-pool-search">
-          <button id="btnSelectAll" class="btn btn-sm btn-primary" title="全选所有参考书">全选</button>
+        <div class="ref-pool-row"><!-- 第一栏：排序下拉 -->
           <select id="refPoolSort" class="input ref-sort" title="排序方式（域优先+置顶恒生效）">
             <option value="name">按拼音</option>
             <option value="time-desc">按时间（新→旧）</option>
             <option value="time-asc">按时间（旧→新）</option>
           </select>
-          <button id="btnDismantle" class="btn btn-sm btn-danger" title="拆书（功能规划中）">拆书</button>
+        </div>
+        <div class="ref-pool-row ref-pool-search"><!-- 第二栏：搜索（全选 | 搜索框 | 搜索按钮） -->
+          <button id="btnSelectAll" class="btn btn-sm btn-primary" title="点一次全选，再点全部反选">全选</button>
+          <input id="refPoolSearch" class="input ref-search" placeholder="🔍 筛选…" autocomplete="off">
+          <button id="btnSearchPool" class="btn btn-sm" title="按关键字筛选参考书（回车同效）">搜索</button>
         </div>
         <div id="refPoolList" class="ref-pool-list"><span class="muted">加载中…</span></div>
       </div>
     </div>
   </aside>
 </main>
+</div><!-- /pageWorkspace -->
 
 <!-- ===== 设置面板(模态) ===== -->
 <div class="modal-mask" id="settingsMask">
@@ -169,7 +178,7 @@
           <span>解码配方 decode<br><small style="opacity:.6;font-weight:400">JSON（留空不改）</small></span>
           <textarea id="setShotDecode" class="input" rows="6" spellcheck="false" style="font-family:ui-monospace,Consolas,monospace;resize:vertical" placeholder='{"tempRange":[0.5,1.0],"fpSlope":6.7,"supports":{"top_p":false}}'></textarea>
         </label>
-        <div class="setting-hint">decode = 四元组解码配方：tempRange（温度比例映射区间）、fp 系数、presence_penalty、supports（模型不支持的参数声明）。写入 <code>features.shot-writing.chat.decode</code>，下次写作自动生效。</div>
+        <div class="setting-hint">decode = 四元组解码配方：tempRange（温度比例映射区间）、fp 系数、presence_penalty、supports（模型不支持的参数声明）。写入 <code>features.shot-writing.chat.decode</code>，下次写作自动生效。<span style="opacity:.5;color:#999">不填=默认，不建议修改</span></div>
       </div>
       <div class="setting-group-title">写作</div>
       <div class="setting-group">
@@ -201,6 +210,54 @@
     <div class="modal-footer">
       <button class="btn" id="btnSettingsCancel">取消</button>
       <button class="btn btn-primary" id="btnSettingsSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 建库范围选择面板（导入参考书 / 建库标注 共用） ===== -->
+<div class="modal-mask" id="rangeMask">
+  <div class="modal">
+    <div class="modal-header">
+      <span id="rangeTitle">选择建库范围</span>
+      <button class="modal-close" id="btnRangeClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="setting-group">
+        <div class="setting-hint" id="rangeHint"></div>
+        <label class="setting-row">
+          <span>建库方式</span>
+          <select id="rangeMode" class="input">
+            <option value="continue">续建到终点章（推荐）</option>
+            <option value="full">全量建库（从头，⚠ 开销大）</option>
+            <option value="pending">只补上次缺章</option>
+          </select>
+        </label>
+        <label class="setting-row" id="rangeEndRow">
+          <span>终点章号</span>
+          <input id="rangeEnd" type="number" class="input" min="1" step="1">
+        </label>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="btnRangeCancel">取消</button>
+      <button class="btn btn-primary" id="btnRangeOk">开始</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 通用文本输入面板（新建书等单行输入） ===== -->
+<div class="modal-mask" id="inputMask">
+  <div class="modal" style="width:420px">
+    <div class="modal-header">
+      <span id="inputTitle">输入</span>
+      <button class="modal-close" id="btnInputClose">✕</button>
+    </div>
+    <div class="modal-body">
+      <input id="inputField" class="input" autocomplete="off">
+    </div>
+    <div class="modal-footer">
+      <button class="btn" id="btnInputCancel">取消</button>
+      <button class="btn btn-primary" id="btnInputOk">确定</button>
     </div>
   </div>
 </div>

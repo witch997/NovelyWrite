@@ -25,8 +25,9 @@ fn main() {
             std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_millis(1500)));
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External("http://127.0.0.1:3081".parse().unwrap()))
                 .title("NovelyWrite")
-                .inner_size(1280.0, 860.0)
-                .min_inner_size(900.0, 600.0)
+                .inner_size(1280.0, 960.0)
+                .min_inner_size(1200.0, 700.0)
+                .maximized(true) // 打开即最大化（填满屏幕，保留任务栏；可点还原）
                 .build()?;
             Ok(())
         })

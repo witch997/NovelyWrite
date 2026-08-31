@@ -354,6 +354,18 @@
   const aiResult = $("aiResult");
 
   /* ================= 通用工具 ================= */
+  // 安全 localStorage：浏览器跟踪防护/隐私模式可能阻止 storage 访问（抛 SecurityError），
+  // 统一 try-catch 包裹，失败静默返回默认值，绝不中断应用初始化。
+  function safeGet(key) {
+    try { return localStorage.getItem(key); } catch { return null; }
+  }
+  function safeSet(key, value) {
+    try { localStorage.setItem(key, value); } catch { /* 存储不可用时忽略 */ }
+  }
+  function safeGetJSON(key, fallback) {
+    try { const v = JSON.parse(safeGet(key) || "null"); return v === null || v === undefined ? fallback : v; } catch { return fallback; }
+  }
+
   async function api(url, opt = {}) {
     const res = await fetch(url, {
       headers: { "Content-Type": "application/json" },
@@ -474,7 +486,7 @@
   const FONT_MIN = 12, FONT_MAX = 24, FONT_DEFAULT = 15;
   /** 当前字号 */
   function getEditorFontSize() {
-    const v = Number(localStorage.getItem(FONT_KEY) ?? FONT_DEFAULT);
+    const v = Number(safeGet(FONT_KEY) ?? FONT_DEFAULT);
     return Number.isFinite(v) ? Math.max(FONT_MIN, Math.min(FONT_MAX, v)) : FONT_DEFAULT;
   }
   /** 应用字号到 Vditor 编辑区（CSS 变量，所有模式生效）+ 更新工具栏字号显示 */
@@ -493,7 +505,7 @@
   /** 字号 ±delta（clamp 到 [12,24]），存 localStorage 并应用 */
   function adjustEditorFontSize(delta) {
     const next = Math.max(FONT_MIN, Math.min(FONT_MAX, getEditorFontSize() + delta));
-    localStorage.setItem(FONT_KEY, String(next));
+    safeSet(FONT_KEY, String(next));
     applyEditorFontSize();
   }
 
@@ -560,41 +572,38 @@
   }
   /** 读取自动保存间隔（localStorage，默认 5 分钟） */
   function getAutoSaveMinutes() {
-    const v = Number(localStorage.getItem("nw-autosave-min") ?? "5");
+    const v = Number(safeGet("nw-autosave-min") ?? "5");
     return Number.isFinite(v) && v >= 0 ? v : 5;
   }
 
   /* ================= 书（我的作品 mybook 资产区） ================= */
+  /** 更新写作台书名显示（原 bookSelect 下拉 → 静态书名） */
+  function updateBookName(name) {
+    const el = $("currentBookName");
+    if (el) el.textContent = name ? name : "（无书）";
+  }
+
   async function loadBooks() {
     try {
       const d = await api("/api/books");
       state.books = d.books || [];
-      const sel = $("bookSelect");
-      sel.innerHTML = "";
       if (!state.books.length) {
-        sel.innerHTML = '<option value="">(无书,先新建)</option>';
         state.currentBook = null;
+        updateBookName("");
         renderOutline();
         return;
-      }
-      for (const b of state.books) {
-        const opt = document.createElement("option");
-        opt.value = b.name;
-        opt.textContent = `${b.name}（${b.chapters}章）`;
-        sel.appendChild(opt);
       }
       // 保持当前选择（或恢复上次打开的书；都没有则默认第一本）
       let lastBook = null;
       try { lastBook = JSON.parse(localStorage.getItem("nw-last-open") || "null")?.book ?? null; } catch { /* ignore */ }
       if (state.currentBook && state.books.some((b) => b.name === state.currentBook)) {
-        sel.value = state.currentBook;
+        // 保持
       } else if (lastBook && state.books.some((b) => b.name === lastBook)) {
         state.currentBook = lastBook;
-        sel.value = lastBook;
       } else {
         state.currentBook = state.books[0].name;
-        sel.value = state.currentBook;
       }
+      updateBookName(state.currentBook);
       await loadBookDetail(state.currentBook);
     } catch (e) {
       $("outlineList").innerHTML = `<div class="placeholder">书加载失败: ${e.message}</div>`;
@@ -624,28 +633,21 @@
     }
   }
 
-  /** 新建书（prompt 书名 → POST /api/books → 刷新并选中） */
+  /** 新建书（输入书名 → POST /api/books → 刷新并选中） */
   async function newBook() {
-    const name = prompt("新建书（书名，仅中文/字母/数字等）:");
+    const name = await promptModal("新建书", { value: "", placeholder: "书名（仅中文/字母/数字等）" });
     if (!name) return;
     try {
       await api("/api/books", { method: "POST", body: JSON.stringify({ name: name.trim() }) });
       await loadBooks();
-      $("bookSelect").value = name.trim();
       state.currentBook = name.trim();
+      updateBookName(name.trim());
       await loadBookDetail(name.trim());
+      openWorkspaceTab(name.trim()); // 拉写作工作台标签
       toast(`✅ 已建书: ${name.trim()}`);
     } catch (e) {
       toast(`建书失败: ${e.message}`);
     }
-  }
-
-  /** 书选择变化 */
-  async function onBookChange() {
-    const name = $("bookSelect").value;
-    if (!name) { state.currentBook = null; renderOutline(); return; }
-    await flushSave(); // 切换书前强制保存当前章节（防未保存内容丢失）
-    await loadBookDetail(name);
   }
 
   /* ================= 大纲 ================= */
@@ -692,7 +694,7 @@
     state.currentChapter = num;
     renderOutline();
     try {
-      localStorage.setItem("nw-last-open", JSON.stringify({ book: state.currentBook, chapter: num }));
+      safeSet("nw-last-open", JSON.stringify({ book: state.currentBook, chapter: num }));
     } catch { /* ignore */ }
     try {
       const d = await api(`/api/books/${encodeURIComponent(state.currentBook)}/chapters/${num}`);
@@ -741,40 +743,23 @@
   async function loadConfig() {
     try {
       const cfg = await api("/api/config");
-      // LLM 就绪状态（模型选择器左侧）
+      // LLM 就绪状态（功能区底部：设置上方）
       const statusEl = $("envStatus");
       if (cfg?.chat?.apiKeySet) {
-        statusEl.textContent = "LLM 就绪";
-        statusEl.className = "env-status ok";
+        statusEl.textContent = "● LLM 已就绪";
+        statusEl.className = "env-status env-status-nav ok";
       } else {
-        statusEl.textContent = "⚠ LLM 未配置(无 apiKey)";
-        statusEl.className = "env-status warn";
+        statusEl.textContent = "● LLM 未就绪";
+        statusEl.className = "env-status env-status-nav err";
       }
-      // 顶栏写作模型选择器：选项从写作 API 读（独立 base/key，缺则回退全局 chat）
-      const current = cfg?.features?.["shot-writing"]?.chat?.model || "";
-      const data = await fetchModels("writing");
-      fillModelSelect($("modelSelect"), data, current);
     } catch {
-      $("envStatus").textContent = "服务未连接";
-      $("envStatus").className = "env-status warn";
-      $("modelSelect").innerHTML = '<option value="">(无连接)</option>';
+      $("envStatus").textContent = "● LLM 未就绪";
+      $("envStatus").className = "env-status env-status-nav err";
     }
   }
 
   /** 模型切换 → 写入 config features.shot-writing.chat.model */
-  async function onModelChange() {
-    const model = $("modelSelect").value;
-    if (!model) return;
-    try {
-      await api("/api/config", {
-        method: "PUT",
-        body: JSON.stringify({ features: { "shot-writing": { chat: { model } } } }),
-      });
-      toast(`✅ 写作模型: ${model}`);
-    } catch (e) {
-      toast(`模型切换失败: ${e.message}`);
-    }
-  }
+  /* 模型选择已并入设置面板（setShotModel），不再有顶栏快捷切换 */
 
   /* ================= 参考书池(跨书参考源选择,可多选) ================= */
   const refPool = new Map(); // name → {checked, domain}
@@ -879,34 +864,138 @@
   }
 
   /* ================= 导入参考书（选 txt → 选建库范围 → 自动建库） ================= */
-  function importBook() {
-    const input = $("bookFileInput");
-    input.value = "";
-    input.click(); // 打开文件选择器（选语料 txt）
+  /* ================= 建库范围选择面板（导入参考书 / 建库标注 共用） ================= */
+  /**
+   * 弹出「建库范围」模态面板，返回 Promise：
+   *   解析为 { pending:true }（补建缺章）
+   *          或 { from:0 }（全量建库）
+   *          或 { from:startCh, to:N }（续建到终点章）
+   *   取消时 resolve(null)。
+   * @param {{title:string, hint:string, startCh:number, defEnd:number}} opt
+   */
+  function openRangePanel({ title, hint, startCh, defEnd }) {
+    return new Promise((resolve) => {
+      $("rangeTitle").textContent = title;
+      $("rangeHint").textContent = hint;
+      const modeSel = $("rangeMode");
+      const endRow = $("rangeEndRow");
+      const endInput = $("rangeEnd");
+      endInput.value = String(defEnd);
+      endInput.min = String(startCh);
+      // 方式切换：续建显示终点章输入；全量/补建隐藏
+      const syncMode = () => {
+        const m = modeSel.value;
+        endRow.style.display = m === "continue" ? "flex" : "none";
+        if (m === "continue") endInput.focus();
+      };
+      modeSel.onchange = syncMode;
+      modeSel.value = "continue";
+      syncMode();
+      $("rangeMask").classList.add("open");
+      // 回车确认
+      const onKey = (e) => { if (e.key === "Enter") confirm(); };
+      endInput.onkeydown = onKey;
+      const cleanup = () => {
+        $("rangeMask").classList.remove("open");
+        $("btnRangeOk").onclick = null;
+        $("btnRangeCancel").onclick = null;
+        $("btnRangeClose").onclick = null;
+        endInput.onkeydown = null;
+        modeSel.onchange = null;
+      };
+      const confirm = () => {
+        const m = modeSel.value;
+        let result = null;
+        if (m === "pending") result = { pending: true };
+        else if (m === "full") result = { from: 0 };
+        else {
+          const end = parseInt(endInput.value, 10);
+          if (!Number.isFinite(end) || end < startCh) { toast(`终点章号需 ≥ ${startCh}`); return; }
+          result = { from: startCh, to: end };
+        }
+        cleanup();
+        resolve(result);
+      };
+      $("btnRangeOk").onclick = confirm;
+      $("btnRangeCancel").onclick = () => { cleanup(); resolve(null); };
+      $("btnRangeClose").onclick = () => { cleanup(); resolve(null); };
+      // 点遮罩空白关闭
+      $("rangeMask").onclick = (e) => { if (e.target === $("rangeMask")) { cleanup(); resolve(null); } };
+    });
   }
 
-  async function onBookFile(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const base = file.name.replace(/\.txt$/i, "").replace(/-语料$/, "").trim();
+  /** 通用单行输入面板（替代原生 prompt）。resolve(字符串) 或 resolve(null)（取消/空）。 */
+  function promptModal(title, { value = "", placeholder = "", select = false } = {}) {
+    return new Promise((resolve) => {
+      $("inputTitle").textContent = title;
+      const field = $("inputField");
+      field.value = value;
+      field.placeholder = placeholder;
+      field.onkeydown = (e) => { if (e.key === "Enter") confirm(); };
+      $("inputMask").classList.add("open");
+      const cleanup = () => {
+        $("inputMask").classList.remove("open");
+        field.onkeydown = null;
+        $("btnInputOk").onclick = null;
+        $("btnInputCancel").onclick = null;
+        $("btnInputClose").onclick = null;
+      };
+      const confirm = () => { const v = field.value.trim(); cleanup(); resolve(v || null); };
+      $("btnInputOk").onclick = confirm;
+      $("btnInputCancel").onclick = () => { cleanup(); resolve(null); };
+      $("btnInputClose").onclick = () => { cleanup(); resolve(null); };
+      $("inputMask").onclick = (e) => { if (e.target === $("inputMask")) { cleanup(); resolve(null); } };
+      setTimeout(() => { field.focus(); field.select(); }, 0);
+    });
+  }
+
+  /** 公共导入建库流程：查进度 → 弹范围面板 → POST /api/tasks/import-book
+   *  @param {string} filename 语料文件名（如 大王饶命-语料.txt）→ 推导书名
+   *  @param {string} contentB64 原始字节 base64（外传；空 = 服务器走 mybook 原稿路径）
+   */
+  async function importBookFlow(filename, contentB64) {
+    const base = filename.replace(/\.txt$/i, "").replace(/-语料$/, "").trim();
+    const isMy = !contentB64; // 无字节 → mybook 原稿路径（我的书）
     // 查已建库进度（同名项目已标注章数 = 续建起点）
     let lastCh = 0;
     try {
       const d = await api("/api/projects");
-      lastCh = (d.projects || []).find((p) => p.name === base)?.meta?.chaptersAnnotated || 0;
+      lastCh = (d.projects || []).find((p) => p.name === base && (!isMy || p.domain === "my"))?.meta?.chaptersAnnotated || 0;
     } catch { /* 查不到按 0 */ }
     const startCh = lastCh + 1; // 续建从最新章节的下一章开始
     const defEnd = startCh + 29; // 默认一次续建 30 章（推荐单批上限）
     const hint = lastCh > 0 ? `已建库至第 ${lastCh} 章，将从第 ${startCh} 章续建` : "尚未建库，将从第 1 章开始";
-    const endStr = prompt(
-      `导入《${base}》——选择建库范围（${hint}）\n\n` +
-      `· 输入终点章号 N = 从第 ${startCh} 章续建到第 N 章（推荐每次 ≤30 章）\n` +
-      `· 输入 0 = 全量建库（⚠ 从头建全书，一次开销很大，不推荐）\n` +
-      `· 输入 p = 补建指令（只补上次未完成的缺章）\n\n` +
-      `默认终点章号：`,
-      String(defEnd)
-    );
-    if (endStr === null) return; // 取消
+    const range = await openRangePanel({ title: isMy ? `对《${base}》建库标注` : `导入《${base}》`, hint, startCh, defEnd });
+    if (!range) return; // 取消
+    const body = isMy ? { name: base, domain: "my" } : { filename, contentB64 };
+    if (range.pending) body.pending = true;            // 补建指令
+    else if (range.from === 0) body.from = 0;          // 全量（服务器端转 --all）
+    else { body.from = range.from; body.to = range.to; } // 续建到终点章
+    toast(isMy ? `正在对《${base}》合成语料并建库…` : `正在导入《${base}》并生成章节清单…`);
+    try {
+      const r = await api("/api/tasks/import-book", { method: "POST", body: JSON.stringify(body) });
+      const modeDesc = body.pending ? "补建缺章" : body.to ? `续建第${body.from}~${body.to}章` : r.mode;
+      // 变更检测结果（原稿变更 → 重标/剔除/新增）透传提示
+      const ch = r.change;
+      let changeNote = "";
+      if (ch) {
+        const parts = [];
+        if (ch.changed?.length) parts.push(`重标第${ch.changed.join(",")}章`);
+        if (ch.deleted?.length) parts.push(`剔除第${ch.deleted.join(",")}章`);
+        if (ch.newChs?.length) parts.push(`新增第${ch.newChs.join(",")}章`);
+        changeNote = parts.length ? `（检测到原稿变更：${parts.join("、")}）` : "";
+      }
+      toast(`✅ 已开始建库《${r.name}》（${modeDesc}）${r.encoding ? `｜${r.encoding}` : ""}${changeNote}`);
+      await loadRefPool(); // 刷新参考书池
+    } catch (err) {
+      toast(isMy ? `建库失败: ${err.message}` : `导入失败: ${err.message}`);
+    }
+  }
+
+  /** 文件选择 → 导入参考书（外传语料 txt，读原始字节 base64） */
+  async function onBookFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
     // 读原始字节（base64）而非 file.text()：file.text() 强制按 UTF-8 解码，
     // GBK/GB2312 语料会当场损坏成 �（不可逆）。原始字节交由服务端检测编码并转换。
     let contentB64 = "";
@@ -923,104 +1012,71 @@
       toast(`读取文件失败: ${err.message}`);
       return;
     }
-    const body = { filename: file.name, contentB64 };
-    const s = String(endStr).trim().toLowerCase();
-    if (s === "p") {
-      body.pending = true; // 补建指令
-    } else if (s === "0") {
-      body.from = 0; // 全量（服务器端转 --all）
-    } else {
-      const end = parseInt(s, 10);
-      if (!Number.isFinite(end) || end < startCh) { toast(`终点章号需 ≥ ${startCh}，已取消`); return; }
-      body.from = startCh; // 从最新章节之后续建
-      body.to = end;       // 到指定终点章
-    }
-    toast(`正在导入《${base}》并生成章节清单…`);
+    await importBookFlow(file.name, contentB64);
+  }
+
+  /** 右栏「外部书」建库标注：自动选 corpus 区的对应语料文件（等价于 bookFileInput 选了它） */
+  async function annotateExBook(book) {
+    const fname = `${book}-语料.txt`;
     try {
-      const r = await api("/api/tasks/import-book", { method: "POST", body: JSON.stringify(body) });
-      const modeDesc = body.pending ? "补建缺章" : body.to ? `续建第${body.from}~${body.to}章` : r.mode;
-      toast(`✅ 已开始建库《${r.name}》（${modeDesc}）${r.encoding ? `｜${r.encoding}` : ""}`);
-      await loadRefPool(); // 刷新参考书池
+      // 从 server 取 corpus 语料原始字节（以字节方式避免文本解码损耗）
+      const res = await fetch(`/api/corpus/${encodeURIComponent(fname)}`);
+      if (!res.ok) { toast(`未找到 corpus 语料文件：${fname}（${res.status}）`); return; }
+      const buf = await res.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      const CHUNK = 0x8000;
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+      }
+      const contentB64 = btoa(bin);
+      await importBookFlow(fname, contentB64);
+    } catch (err) {
+      toast(`读取语料失败: ${err.message}`);
+    }
+  }
+
+  /** 左栏「我的书」建库标注（mybook 原稿路径） */
+  async function annotateMyBook(name) {
+    await importBookFlow(name, ""); // 空字节 → my 域（server 从 mybook 原稿合成语料）
+  }
+
+  /** 「导入参考书语料」：选语料 txt → 复制到 corpus + 生成章节清单 + 建 exproject 文件夹（不启动标注）→ 刷新条目 */
+  async function importRefOnly() {
+    const inp = $("bookFileInput");
+    const file = inp?.files?.[0] ?? null;
+    if (!file) return;
+    // 恢复默认绑定（标注流程），避免污染其他入口
+    inp.onchange = onBookFile;
+    // 读原始字节（base64），交由服务端编码检测转换
+    let contentB64 = "";
+    try {
+      const ab = await file.arrayBuffer();
+      const bytes = new Uint8Array(ab);
+      const CHUNK = 0x8000;
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+      }
+      contentB64 = btoa(bin);
+    } catch (err) {
+      toast(`读取文件失败: ${err.message}`);
+      return;
+    }
+    toast(`正在导入《${file.name.replace(/\.txt$/i, "").replace(/-语料$/, "")}》…`);
+    try {
+      const r = await api("/api/tasks/import-book", {
+        method: "POST",
+        body: JSON.stringify({ filename: file.name, contentB64, annotate: false }),
+      });
+      toast(`✅ 已导入《${r.name}》（语料 + 章节清单 + exproject 文件夹）${r.encoding ? `｜${r.encoding}` : ""}`);
+      await renderHomeDismantle(); // 刷新条目（右栏出现该书）
     } catch (err) {
       toast(`导入失败: ${err.message}`);
     }
   }
 
-  /* ================= 对我的书建库标注（mybook 原稿 → 语料 → 标注 → 向量 → 聚合） ================= */
-  async function annotateBook() {
-    const name = state.currentBook;
-    if (!name) { toast("请先选择一本书"); return; }
-    // 查该书已建库进度（my 域 project-meta.chaptersAnnotated = 续建起点）
-    let lastCh = 0;
-    try {
-      const d = await api("/api/projects");
-      lastCh = (d.projects || []).find((p) => p.name === name && p.domain === "my")?.meta?.chaptersAnnotated || 0;
-    } catch { /* 查不到按 0 */ }
-    const startCh = lastCh + 1; // 续建从最新章节的下一章开始
-    const defEnd = startCh + 29; // 默认一次续建 30 章（推荐单批上限）
-    const hint = lastCh > 0 ? `已建库至第 ${lastCh} 章，将从第 ${startCh} 章续建` : "尚未建库，将从第 1 章开始";
-    const endStr = prompt(
-      `对《${name}》建库标注（${hint}）\n\n` +
-      `· 输入终点章号 N = 从第 ${startCh} 章续建到第 N 章（推荐每次 ≤30 章）\n` +
-      `· 输入 0 = 全量建库（⚠ 从头建全书，一次开销很大，不推荐）\n` +
-      `· 输入 p = 补建指令（只补上次未完成的缺章）\n\n` +
-      `默认终点章号：`,
-      String(defEnd)
-    );
-    if (endStr === null) return; // 取消
-    const body = { name, domain: "my" }; // domain=my：server 从 mybook 原稿合成语料
-    const s = String(endStr).trim().toLowerCase();
-    if (s === "p") {
-      body.pending = true; // 补建指令
-    } else if (s === "0") {
-      body.from = 0; // 全量（服务器端转 --all）
-    } else {
-      const end = parseInt(s, 10);
-      if (!Number.isFinite(end) || end < startCh) { toast(`终点章号需 ≥ ${startCh}，已取消`); return; }
-      body.from = startCh; // 从最新章节之后续建
-      body.to = end;       // 到指定终点章
-    }
-    toast(`正在对《${name}》合成语料并建库…`);
-    try {
-      const r = await api("/api/tasks/import-book", { method: "POST", body: JSON.stringify(body) });
-      const modeDesc = body.pending ? "补建缺章" : body.to ? `续建第${body.from}~${body.to}章` : r.mode;
-      // 变更检测结果（原稿变更 → 重标/剔除/新增）透传提示
-      const ch = r.change;
-      let changeNote = "";
-      if (ch) {
-        const parts = [];
-        if (ch.changed?.length) parts.push(`重标第${ch.changed.join(",")}章`);
-        if (ch.deleted?.length) parts.push(`剔除第${ch.deleted.join(",")}章`);
-        if (ch.newChs?.length) parts.push(`新增第${ch.newChs.join(",")}章`);
-        changeNote = parts.length ? `（检测到原稿变更：${parts.join("、")}）` : "";
-      }
-      toast(`✅ 已开始建库《${r.name}》${modeDesc}${changeNote}`);
-      await loadRefPool(); // 刷新参考书池（我的书会以「我的」域出现）
-    } catch (err) {
-      toast(`建库失败: ${err.message}`);
-    }
-  }
-
   /* ================= 拆书：生成拆书地图（读 store 已建库数据 → 新窗口展示） ================= */
-  async function dismantleBook() {
-    // 拆书对象 = 参考书池勾选的书（1 本）；未勾选/多选给出提示
-    const checked = selectedRefBooks();
-    if (checked.length === 0) { toast("请先在参考书池勾选一本书再拆书"); return; }
-    if (checked.length > 1) { toast("拆书一次只支持一本书，请只勾选一本"); return; }
-    const name = checked[0];
-    // 探测该书是否已建库（两域）
-    let hasProject = false;
-    try {
-      const d = await api("/api/projects");
-      hasProject = Boolean((d.projects || []).find((x) => x.name === name));
-    } catch { /* 探测失败按未建库处理 */ }
-    if (!hasProject) { toast(`《${name}》尚未建库，请先「建库标注」再拆书`); return; }
-    // 新窗口打开拆书看板（GET /api/report/:name 直出 HTML）
-    const url = `/api/report/${encodeURIComponent(name)}`;
-    window.open(url, "_blank");
-    toast(`正在生成《${name}》拆书看板…（新窗口）`);
-  }
-
   /* ================= AI 写作流程 ================= */
   async function startTask(kind, body) {
     const { taskId } = await api(`/api/tasks/${kind}`, { method: "POST", body: JSON.stringify(body) });
@@ -1156,7 +1212,7 @@
   function initSplitters() {
     const layout = document.querySelector(".layout");
     const layoutW = () => layout.getBoundingClientRect().width;
-    const left = $("paneLeft"), draftPane = $("paneDraft"), right = $("paneRight");
+    const left = $("paneLeft"), editorEl = $("paneEditor"), draftPane = $("paneDraft"), right = $("paneRight");
     const spLeft = document.querySelector('.splitter-v[data-split="left"]');
     const spDraft = document.querySelector('.splitter-v[data-split="draft"]');
     const spRight = document.querySelector('.splitter-v[data-split="right"]');
@@ -1164,29 +1220,76 @@
     const inputSec = $("aiInputSec"), refSec = $("aiRefSec");
     const spH1 = document.querySelector('.splitter-h[data-split="aiInput"]');
 
-    // 恢复记忆尺寸（列宽）——受写作台最小宽度(400)约束，防覆盖
-    const EDITOR_MIN = 400, SPLITV = 5; // 写作台最小宽 / 竖分隔条宽
-    const MIN_COL = 140; // 各栏最小宽
-    const fixedOthers = (exclude) => {
-      let sum = EDITOR_MIN + SPLITV * 3; // 写作台 + 三条分隔条
-      if (exclude !== left) sum += left.getBoundingClientRect().width;
-      if (exclude !== draftPane) sum += draftPane.getBoundingClientRect().width;
-      if (exclude !== right) sum += right.getBoundingClientRect().width;
-      return sum;
+    // 恢复记忆尺寸（列宽）——受各栏最小宽度约束
+    const EDITOR_MIN = 400, DRAFT_MIN = 200, COL_MIN = 140, SPLITV = 5; // 编辑器/成稿/外侧栏最小宽 + 竖分隔条宽
+    const MIN_INNER = EDITOR_MIN + DRAFT_MIN + SPLITV; // 中栏最小宽（编辑器+成稿+spD）
+    const centerEl = document.getElementById("paneCenter");
+
+    const wLeft = () => left.getBoundingClientRect().width;
+    const wRight = () => right.getBoundingClientRect().width;
+    const wEditor = () => editorEl.getBoundingClientRect().width;
+    const wDraft = () => draftPane.getBoundingClientRect().width;
+    const wCenter = () => centerEl.getBoundingClientRect().width;
+    const centerW = () => wCenter(); // 中栏实际宽（JS 管理）
+
+    /** 应用中栏内部两栏宽度：按当前比例分配，触底策略 A（先触底一栏锁定最小，剩余给另一栏） */
+    /** 基于快照的纯计算（不读实时 DOM 宽，杜绝读写反馈循环——WebView2 下 getBoundingClientRect+写宽会指数放大）
+     *  snap = {L,C,R,E,D} 为按下瞬间快照；返回 {L,C,R,E,D} 目标宽（已 clamp），由调用方一次性写回。 */
+
+    /** 左栏拖动：只改左栏宽（clamp 到布局剩余 - 中栏最小 - 右栏），中栏 flex:1 自动吸收 */
+    function calcLeft(snap, w) {
+      const newL = Math.max(COL_MIN, Math.min(w, layoutW() - SPLITV * 2 - MIN_INNER - snap.R));
+      return { L: newL };
+    }
+    /** 右栏拖动：只改右栏宽（clamp 到布局剩余 - 中栏最小 - 左栏），中栏 flex:1 自动吸收 */
+    function calcRight(snap, w) {
+      const newR = Math.max(COL_MIN, Math.min(w, layoutW() - SPLITV * 2 - MIN_INNER - snap.L));
+      return { R: newR };
+    }
+    /** 成稿栏拖动：只调编辑器↔成稿栏，中栏总宽不变 */
+    function calcDraft(snap, w) {
+      const avail = snap.C - SPLITV;
+      const newD = Math.max(DRAFT_MIN, Math.min(w, avail - EDITOR_MIN));
+      return { D: newD, E: avail - newD };
+    }
+    /** 中栏内部按比例分配（触底策略 A）：基于 center 实际宽（flex 决定），分配 editor/draft */
+    function calcInner(snap) {
+      const cw = wCenter();
+      if (cw < MIN_INNER) return null; // 中栏不可见/过小（页面隐藏时 wCenter=0）→ 跳过，避免设出负宽/异常
+      const avail = cw - SPLITV;
+      const total = Math.max(1, snap.E + snap.D);
+      let ed = avail * (snap.E / total);
+      ed = Math.max(EDITOR_MIN, Math.min(ed, avail - DRAFT_MIN));
+      return { E: ed, D: avail - ed };
+    }
+    /** 写回 DOM（一次性）；不设 center 宽——center 由 flex:1 自动铺满剩余 */
+    function writeLayout(w) {
+      if (!w) return;
+      if (w.L !== undefined) left.style.width = Math.round(w.L) + "px";
+      if (w.R !== undefined) right.style.width = Math.round(w.R) + "px";
+      if (w.E !== undefined) editorEl.style.width = Math.round(w.E) + "px";
+      if (w.D !== undefined) draftPane.style.width = Math.round(w.D) + "px";
+    }
+
+    // 初始化：左 230 / 右 350（中栏 flex:1 自动铺满剩余 → 默认天然铺满整个布局）
+    const layoutInit = () => {
+      left.style.width = "230px";
+      right.style.width = "350px";
     };
-    // 该栏最大宽 = 布局 − 其他栏与写作台最小占用；写作台 min 优先（不覆盖写作台）
-    const maxLeft = () => Math.max(MIN_COL, layoutW() - fixedOthers(left));
-    const maxDraft = () => Math.max(MIN_COL, layoutW() - fixedOthers(draftPane));
-    const maxRight = () => Math.max(MIN_COL, layoutW() - fixedOthers(right));
-    const savedL = Number(localStorage.getItem("nw-left-w"));
-    const savedD = Number(localStorage.getItem("nw-draft-w"));
-    const savedR = Number(localStorage.getItem("nw-right-w"));
-    if (savedL > 0) left.style.width = Math.min(savedL, maxLeft()) + "px";
-    if (savedD > 0) draftPane.style.width = Math.min(savedD, maxDraft()) + "px";
-    if (savedR > 0) right.style.width = Math.min(savedR, maxRight()) + "px";
+    /** 窗口尺寸变化/切到写作台：中栏 flex 自动铺满，只需重新分配中栏内部 editor/draft */
+    function relayout() {
+      if (window.__splitting) return;
+      writeLayout(calcInner({ E: wEditor(), D: wDraft() }));
+    }
+    window.__relayout = relayout; // 供 switchTab 切到写作台（可见）时调用
+    layoutInit();
+    // 每次打开按比例重新分配（不恢复记忆，清除脏键）
+    ["nw-left-w", "nw-draft-w", "nw-right-w"].forEach((k) => { try { localStorage.removeItem(k); } catch { /* ignore */ } });
+    // 仅在可见时分配内部（当前 pageWorkspace 临时显示，wCenter 有效）
+    if (wCenter() >= MIN_INNER) writeLayout(calcInner({ E: wEditor(), D: wDraft() }));
 
     /* ---------- AI 参考栏：两块 + 一条拖拽条 绝对定位统一排布 ---------- */
-    let inputH = Math.max(110, Number(localStorage.getItem("nw-ai-input-h")) || 160);
+    let inputH = Math.max(110, Number(safeGet("nw-ai-input-h")) || 160);
     const SPLIT = 5; // 单条拖拽条高
 
     function layoutAiPanel() {
@@ -1201,36 +1304,82 @@
       refSec.style.top = inputH + SPLIT + "px";
       refSec.style.height = Math.max(60, panelH - inputH - SPLIT) + "px";
     }
+    // 工作台从首页切换到显隐 / 窗口尺寸变化时，pane-body 高度会从 0 变化。
+    // 首次 layoutAiPanel 若在高度为 0 时调用会提前 return，导致参考书区未排布；
+    // 用 ResizeObserver 监听 #aiPanel 实际尺寸，一变就重排，参考书池总能正确显示。
+    if (typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(() => layoutAiPanel()).observe(panel);
+    }
+    window.addEventListener("resize", () => { layoutAiPanel(); relayout(); });
     layoutAiPanel();
 
-    /** 列宽拖拽（左栏向右增宽 / 成稿栏 / 右栏向左增宽）
-     *  maxW：该栏最大宽度（由其他栏最小宽度约束，防覆盖写作台）
-     *  isLeft：true=向右拖增宽（左栏）；false=向左拖增宽（成稿/右栏） */
-    function dragCol(spEl, target, saveKey, isLeft, maxW) {
+    /** 通用竖条拖拽——快照事务模式：
+     *  pointerdown 捕获全部栏宽快照；move 只用「快照 + 位移」纯计算目标宽，一次性写回。
+     *  全程不读实时 getBoundingClientRect —— 杜绝 WebView2 下「读宽→写宽」自反馈指数放大。
+     *  双事件兜底：pointer + mouse up 任一先到即结束；不用 setPointerCapture（坐标系统一）。 */
+    function dragBar(spEl, kind) {
+      let move = null, up = null, noDrag = null;
+      const clear = () => {
+        if (move) { document.removeEventListener("pointermove", move); document.removeEventListener("mousemove", move); move = null; }
+        if (up) { document.removeEventListener("pointerup", up); document.removeEventListener("mouseup", up); document.removeEventListener("pointercancel", up); document.removeEventListener("mouseleave", up); up = null; }
+        if (noDrag) { document.removeEventListener("selectstart", noDrag); document.removeEventListener("dragstart", noDrag); noDrag = null; }
+      };
       spEl.addEventListener("pointerdown", (e) => {
+        if (e.button !== undefined && e.button !== 0) return;
         e.preventDefault();
-        spEl.setPointerCapture?.(e.pointerId);
+        clear();
+        window.__splitting = true;
         spEl.classList.add("dragging");
         const startX = e.clientX;
-        const startW = target.getBoundingClientRect().width;
-        const move = (ev) => {
-          const delta = ev.clientX - startX;
-          const w = Math.max(140, Math.min(startW + (isLeft ? delta : -delta), maxW()));
-          target.style.width = w + "px";
+        // 按下瞬间快照（唯一读一次实时宽）
+        const snap = { L: wLeft(), C: wCenter(), R: wRight(), E: wEditor(), D: wDraft() };
+        let acc = 0, lastX = startX;
+        move = (ev) => {
+          acc += ev.clientX - lastX;
+          lastX = ev.clientX;
+          // 纯计算（快照 + 位移）；center 是 flex:1 自动铺满，不需 JS 设宽
+          if (kind === "left") {
+            const w = calcLeft(snap, snap.L + acc);
+            writeLayout({ ...w, ...calcInner(snap) });
+          } else if (kind === "right") {
+            const w = calcRight(snap, snap.R - acc);
+            writeLayout({ ...w, ...calcInner(snap) });
+          } else { // draft
+            const w = calcDraft(snap, snap.D - acc);
+            writeLayout(w);
+          }
+          // 总宽保险：左/右栏总和不得超过布局可用宽（中栏 flex 自动，防御性）
+          const avail = layoutW() - SPLITV * 2;
+          const totalLR = wLeft() + wRight();
+          if (totalLR > avail - MIN_INNER + 1) {
+            const over = totalLR - (avail - MIN_INNER);
+            const k = (totalLR - over) / totalLR;
+            left.style.width = Math.max(COL_MIN, Math.round(wLeft() * k)) + "px";
+            right.style.width = Math.max(COL_MIN, Math.round(wRight() * k)) + "px";
+            writeLayout(calcInner(snap));
+          }
         };
-        const up = (ev) => {
+        up = () => {
+          window.__splitting = false;
           spEl.classList.remove("dragging");
-          spEl.releasePointerCapture?.(ev.pointerId);
-          document.removeEventListener("pointermove", move);
-          document.removeEventListener("pointerup", up);
-          document.removeEventListener("pointercancel", up);
-          localStorage.setItem(saveKey, String(Math.round(target.getBoundingClientRect().width)));
+          clear();
         };
+        noDrag = (ev) => ev.preventDefault();
+        document.addEventListener("selectstart", noDrag);
+        document.addEventListener("dragstart", noDrag);
         document.addEventListener("pointermove", move);
+        document.addEventListener("mousemove", move);
         document.addEventListener("pointerup", up);
+        document.addEventListener("mouseup", up);
         document.addEventListener("pointercancel", up);
+        document.addEventListener("mouseleave", up);
       });
     }
+
+    // 三根竖条（标准语义：拖向哪边，移动方向侧的栏变窄、对侧变宽）
+    dragBar(spLeft, "left");   // 向左拖→左栏变窄（中栏变宽）；向右拖→左栏变宽（中栏变窄）
+    dragBar(spDraft, "draft"); // 向左拖→成稿栏变宽；向右拖→成稿栏变窄（中栏不变）
+    dragBar(spRight, "right"); // 向左拖→AI参考栏变宽；向右拖→AI参考栏变窄（中栏变宽）
 
     /** 行高拖拽：改 JS 变量 inputH（带 clamp），layoutAiPanel 重排全部区块。
      *  pointer events + setPointerCapture：鼠标移出窗口不丢事件，杜绝卡死。 */
@@ -1254,7 +1403,7 @@
           document.removeEventListener("pointermove", move);
           document.removeEventListener("pointerup", up);
           document.removeEventListener("pointercancel", up);
-          localStorage.setItem(saveKey, String(Math.round(inputH)));
+          safeSet(saveKey, String(Math.round(inputH)));
         };
         document.addEventListener("pointermove", move);
         document.addEventListener("pointerup", up);
@@ -1262,17 +1411,14 @@
       });
     }
 
-    dragCol(spLeft, left, "nw-left-w", true, maxLeft);
-    dragCol(spDraft, draftPane, "nw-draft-w", false, maxDraft); // 分隔条右拖 → 成稿栏变窄（写作台变宽），符合直觉
-    dragCol(spRight, right, "nw-right-w", false, maxRight);
     dragRow(spH1, "nw-ai-input-h", 110); // 输入区：需容纳按钮+输入框（右栏仅一条拖拽条）
-    window.addEventListener("resize", () => layoutAiPanel());
+    window.addEventListener("resize", () => { layoutAiPanel(); relayout(); });
   }
 
   /* ================= 主题切换 ================= */
   function applyTheme(theme) {
     document.body.dataset.theme = theme;
-    localStorage.setItem("nw-theme", theme);
+    safeSet("nw-theme", theme);
     document.querySelectorAll("#themeSwitch .ts-item").forEach((el) => {
       el.classList.toggle("active", el.dataset.theme === theme);
     });
@@ -1370,7 +1516,7 @@
     const sel = $("setAutoSave");
     let min = sel.value === "custom" ? parseInt($("setAutoSaveCustom").value, 10) : Number(sel.value);
     if (!Number.isFinite(min) || min < 0) min = 5;
-    localStorage.setItem("nw-autosave-min", String(min));
+    safeSet("nw-autosave-min", String(min));
     applyAutoSaveSetting();
     toast(`✅ 设置已保存（自动保存 ${min > 0 ? min + " 分钟" : "关闭"}）`);
     loadConfig(); // 刷新顶栏模型选择器
@@ -1390,23 +1536,15 @@
   /* ================= 事件绑定 ================= */
   function bind() {
     $("btnAddChapter").onclick = addChapter;
-    $("btnNewBook").onclick = newBook;
-    $("btnAnnotateBook").onclick = annotateBook; // 对我的书建库标注
-    $("btnDismantle").onclick = dismantleBook;   // 拆书：生成拆书地图并新窗口打开
-    $("bookSelect").onchange = onBookChange;
     // 顶栏「清空」= 清空编辑器（不落盘）；「保存」= 保存到 mybook 资产区
     $("btnNew").onclick = () => { if (vditor) vditor.setValue(""); };
     $("btnSave").onclick = () => saveChapter(false);
     // AI 写作（右栏：输入剧情需求 → 自动生成分镜 → 召回 → 成稿）
     $("btnGenerate").onclick = aiWrite;
-    // 顶栏模型选择器
-    $("modelSelect").onchange = onModelChange;
     // 成稿区"插入到写作栏"（固定按钮在成稿栏头 + 兼容旧内嵌调用）
     $("btnInsertDraft").onclick = insertDraftToEditor;
     $("btnClearDraft").onclick = clearDraft;
     window.__insertDraft = insertDraftToEditor;
-    // 导入参考书
-    $("btnImportBook").onclick = importBook;
     $("bookFileInput").onchange = onBookFile;
     // 参考书搜索（点击/回车才过滤）+ 排序 + 全选
     const searchInput = $("refPoolSearch");
@@ -1435,24 +1573,313 @@
     };
   }
 
+  /* ================= 多标签工作台 + 首页 =================
+   * 标签：首页（固定，不可关） / 写作工作台（每书一标签，共享四栏 DOM，切换时重载该书）
+   *       / 拆书（每书一 iframe 容器，独立保留状态）
+   * 首页：左导航（小说作品/拆书/知识库）+ 右内容区
+   */
+  const tabState = {
+    list: new Map(), // id → {id, kind: "workspace"|"dismantle", title, book}
+    active: "home",
+  };
+  const dismantlePages = new Map(); // tabId → iframe 容器 div
+
+  /** 渲染标签栏动态区 */
+  function renderTabbar() {
+    const box = $("tabbarDynamic");
+    box.innerHTML = "";
+    for (const t of tabState.list.values()) {
+      const el = document.createElement("div");
+      el.className = "tab" + (tabState.active === t.id ? " tab-active" : "");
+      el.dataset.tab = t.id;
+      const title = document.createElement("span");
+      title.textContent = t.title;
+      title.style.cursor = "pointer";
+      title.onclick = () => switchTab(t.id);
+      const close = document.createElement("span");
+      close.className = "tab-close";
+      close.textContent = "✕";
+      close.title = "关闭标签";
+      close.onclick = (e) => { e.stopPropagation(); closeTab(t.id); };
+      el.appendChild(title);
+      el.appendChild(close);
+      box.appendChild(el);
+    }
+    // 首页标签激活态
+    document.querySelector('#tabbar .tab[data-tab="home"]')?.classList.toggle("tab-active", tabState.active === "home");
+  }
+
+  /** 视图切换：只显示激活标签对应的容器 */
+  function showView(id) {
+    $("pageHome").style.display = "none";
+    $("pageWorkspace").style.display = "none";
+    for (const el of dismantlePages.values()) el.style.display = "none";
+    if (id === "home") $("pageHome").style.display = "flex";
+    else if (id === "workspace") $("pageWorkspace").style.display = "flex";
+    else { const el = dismantlePages.get(id); if (el) el.style.display = "flex"; }
+  }
+
+  /** 切换标签 */
+  async function switchTab(id) {
+    tabState.active = id;
+    renderTabbar();
+    const t = tabState.list.get(id);
+    if (id === "home") {
+      showView("home");
+      // 回到首页时刷新当前导航视图（新建书/导入后列表保持最新）
+      const view = document.querySelector(".nav-item.nav-active")?.dataset.homeview || "works";
+      homeNav(view);
+    } else if (t?.kind === "workspace") {
+      showView("workspace");
+      await activateWorkspace(t.book);
+      window.__relayout?.(); // 写作台可见后重新分配中栏内部（此时尺寸正确，防空白）
+    } else if (t?.kind === "dismantle") {
+      showView(id);
+    }
+  }
+  window.__switchTab = switchTab;
+
+  /** 写作工作台标签：切到对应书（换书前保存当前；同书不重载） */
+  async function activateWorkspace(book) {
+    if (state.currentBook !== book) {
+      await flushSave(); // 防止未保存内容丢失
+      updateBookName(book);
+      await loadBookDetail(book);
+    }
+  }
+
+  /** 打开/激活某书的写作工作台标签 */
+  function openWorkspaceTab(book) {
+    const id = "ws:" + book;
+    if (!tabState.list.has(id)) {
+      tabState.list.set(id, { id, kind: "workspace", title: book, book });
+    }
+    switchTab(id);
+  }
+  window.__openWorkspace = openWorkspaceTab;
+
+  /** 打开/激活某书的拆书标签（iframe 独立容器；已开过则直接切过去保留状态） */
+  function openDismantleTab(book) {
+    const id = "dm:" + book;
+    if (!tabState.list.has(id)) {
+      tabState.list.set(id, { id, kind: "dismantle", title: "🔍 " + book, book });
+      const wrap = document.createElement("div");
+      wrap.id = id;
+      wrap.className = "page dismantle-page";
+      wrap.style.display = "none";
+      const iframe = document.createElement("iframe");
+      iframe.src = `/api/report/${encodeURIComponent(book)}`;
+      iframe.style.cssText = "flex:1;min-height:0;border:0;width:100%;height:100%;background:var(--bg-base);";
+      wrap.appendChild(iframe);
+      // 放到设置模态之前（body 尾部区域），避免遮挡任务栏
+      document.body.insertBefore(wrap, $("taskBar"));
+      dismantlePages.set(id, wrap);
+    }
+    switchTab(id);
+  }
+
+  /** 关闭标签（首页固定不可关） */
+  function closeTab(id) {
+    if (id === "home" || !tabState.list.has(id)) return;
+    const wasActive = tabState.active === id;
+    tabState.list.delete(id);
+    const el = dismantlePages.get(id);
+    if (el) { el.remove(); dismantlePages.delete(id); }
+    renderTabbar();
+    if (wasActive) {
+      const keys = [...tabState.list.keys()];
+      switchTab(keys.length ? keys[keys.length - 1] : "home");
+    }
+  }
+
+  /* ---------- 首页：左导航 ---------- */
+  function homeNav(view) {
+    document.querySelectorAll(".nav-item").forEach((el) => {
+      el.classList.toggle("nav-active", el.dataset.homeview === view);
+    });
+    if (view === "works") renderHomeWorks();
+    else renderHomeDismantle(); // 拆书 == 知识库（合并视图）
+  }
+  window.__homeNav = homeNav;
+
+  /** 首页 · 小说作品：书名 + 灰色字数副标题；点书拉写作工作台标签 */
+  async function renderHomeWorks() {
+    const box = $("homeContent");
+    try {
+      const d = await api("/api/books");
+      const books = d.books || [];
+      let html = `<div class="works-list-head">我的书（mybook）</div>
+        <div class="bookshelf">`;
+      for (const b of books) {
+        const sub = [];
+        if (b.chapters) sub.push(`${b.chapters} 章`);
+        if (b.chars) sub.push(`${b.chars.toLocaleString("zh-CN")} 字`);
+        if (b.updatedAt) sub.push(fmtTime(b.updatedAt));
+        html += `<div class="book-card" data-book="${escapeHtml(b.name)}" title="${escapeHtml(b.name)}">
+          <div class="book-cover">${escapeHtml(b.name)}</div>
+          <div class="book-sub">${escapeHtml(sub.join(" · ") || "暂无章节")}</div>
+        </div>`;
+      }
+      html += `</div>
+        <div class="section-title">操作</div>
+        <div style="display:flex;gap:8px;max-width:820px">
+          <button class="btn btn-primary" id="homeNewBook">+ 新建书</button>
+        </div>`;
+      box.innerHTML = html;
+      box.querySelectorAll(".book-card").forEach((el) => {
+        el.onclick = () => openWorkspaceTab(el.dataset.book);
+      });
+      // newBook 内部已完成：建书 → 刷新列表 → 选中 → 拉工作台标签
+      $("homeNewBook").onclick = newBook;
+    } catch (e) {
+      box.innerHTML = `<div class="placeholder">作品列表加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  /** 首页 · 拆书（=知识库合并视图）：列出全部项目（两域）+ 标注/拆解进度，每条下方一个「拆书」按钮 */
+  /** 首页 · 拆书（两栏：左=我的书 mybook，右=外部知识库；顶部为导入操作区） */
+  async function renderHomeDismantle() {
+    const box = $("homeContent");
+    try {
+      const [booksD, projD] = await Promise.all([api("/api/books"), api("/api/projects")]);
+      const books = booksD.books || [];
+      const projects = projD.projects || [];
+      // 顶部操作区（原底部操作移到最上方）：导入参考书语料 → corpus 备份 + 分章 + exbook 区建文件夹
+      let html = `<div class="section-title">操作</div>
+        <div style="display:flex;gap:8px;max-width:820px;margin-bottom:16px">
+          <button class="btn btn-primary" id="homeImportRef">📥 导入参考书语料</button>
+        </div>
+        <div class="dismantle-two-col">
+        <!-- 左栏：我的书（mybook 文件夹建立即出现条目） -->
+        <div class="dismantle-col">
+          <div class="works-list-head">我的书（mybook）</div>
+          <div class="knowledge-grid">`;
+      if (!books.length) html += `<div class="placeholder">我的书为空<br>在写作工作台新建书，或打开 mybook 文件夹放入原稿</div>`;
+      // my 域项目进度（左栏进度条）：name → meta
+      const myMeta = new Map(projects.filter((p) => p.domain === "my").map((p) => [p.name, p.meta]));
+      for (const b of books) {
+        const sub = [];
+        if (b.chapters) sub.push(`${b.chapters} 章`);
+        if (b.chars) sub.push(`${b.chars.toLocaleString("zh-CN")} 字`);
+        const mm = myMeta.get(b.name);
+        const mTotal = mm?.chaptersTotal || 0;
+        const mDone = mm?.chaptersAnnotated || 0;
+        const mPct = mTotal ? Math.round((mDone / mTotal) * 100) : 0;
+        if (mTotal) sub.push(`标注 ${mDone}/${mTotal}`);
+        else sub.push("未建库");
+        html += `<div class="knowledge-card">
+          <div class="kc-name">${escapeHtml(b.name)}</div>
+          <div class="kc-meta">${escapeHtml(sub.join(" · ") || "暂无章节")}</div>
+          <div class="kc-bar"><div class="kc-bar-in" style="width:${Math.min(100, mPct)}%"></div></div>
+          <div class="kc-actions">
+            <button class="btn btn-sm btn-primary kc-my-annotate" data-book="${escapeHtml(b.name)}">建库标注</button>
+            <button class="btn btn-sm btn-danger kc-dismantle" data-book="${escapeHtml(b.name)}">🔍 拆书</button>
+          </div>
+        </div>`;
+      }
+      html += `</div></div>
+        <!-- 右栏：外部知识库 -->
+        <div class="dismantle-col">
+          <div class="works-list-head">外部知识库（exproject）</div>
+          <div class="knowledge-grid">`;
+      const ex = projects.filter((p) => p.domain === "ex");
+      if (!ex.length) html += `<div class="placeholder">外部知识库为空<br>点上方「导入参考书语料」建立（corpus 备份 + 分章 + exproject 文件夹）</div>`;
+      for (const x of ex) {
+        const meta = x.meta;
+        const total = meta?.chaptersTotal || 0;
+        const done = meta?.chaptersAnnotated || 0;
+        const pct = total ? Math.round((done / total) * 100) : 0;
+        const sent = meta?.sentences ? ` · 句子 ${meta.sentences.toLocaleString("zh-CN")}` : "";
+        const shots = meta?.shots ? ` · 分镜 ${meta.shots}` : "";
+        const missing = meta?.missingChapters?.length ? ` · 缺章 ${meta.missingChapters.length}` : "";
+        const pend = x.pending?.length ? ` · 待补跑 ${x.pending.length}` : "";
+        // 未就绪（corpus 备份/分章/exproject 文件夹不齐全）→ 红色副标题提示缺失项
+        const notReady = !x.ready;
+        const missNote = notReady && x.missing?.length ? `缺：${x.missing.join("、")}` : "";
+        html += `<div class="knowledge-card${notReady ? " not-ready" : ""}">
+          <div class="kc-name">${escapeHtml(x.name)}</div>
+          <div class="kc-meta">章节标注 ${done}/${total}（${pct}%）${sent}${shots}${missing}${pend}</div>
+          ${notReady ? `<div class="kc-miss" style="color:#e5484d;font-size:12px;margin-top:4px">⚠ ${escapeHtml(missNote)}</div>` : ""}
+          <div class="kc-bar"><div class="kc-bar-in" style="width:${Math.min(100, pct)}%"></div></div>
+          <div class="kc-actions">
+            <button class="btn btn-sm btn-primary kc-ex-annotate" data-book="${escapeHtml(x.name)}">建库标注</button>
+            <button class="btn btn-sm btn-danger kc-dismantle" data-book="${escapeHtml(x.name)}">🔍 拆书</button>
+          </div>
+        </div>`;
+      }
+      html += `</div></div></div>`;
+      box.innerHTML = html;
+      // 按钮绑定
+      box.querySelectorAll(".kc-dismantle").forEach((btn) => {
+        btn.onclick = () => openDismantleTab(btn.dataset.book);
+      });
+      box.querySelectorAll(".kc-my-annotate").forEach((btn) => {
+        btn.onclick = () => annotateMyBook(btn.dataset.book);
+      });
+      box.querySelectorAll(".kc-ex-annotate").forEach((btn) => {
+        btn.onclick = () => annotateExBook(btn.dataset.book);
+      });
+      $("homeImportRef").onclick = () => {
+        const inp = $("bookFileInput");
+        if (!inp) return;
+        inp.value = ""; // 允许重复选同一文件（onchange 才会触发）
+        inp.onchange = importRefOnly; // 导入模式：仅落库不标注
+        inp.click();
+      };
+    } catch (e) {
+      box.innerHTML = `<div class="placeholder">拆书列表加载失败：${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  /** 首页 · 知识库：全部项目（两域）状态 + 标注进度 */
+  /** 相对时间（近 7 天显示"x天前/昨天/今天"，更早显示日期） */
+  function fmtTime(iso) {
+    const t = new Date(iso);
+    if (isNaN(t)) return "";
+    const diff = Date.now() - t.getTime();
+    const day = 86400000;
+    if (diff < day && t.getDate() === new Date().getDate()) return "今天";
+    if (diff < 2 * day) return "昨天";
+    if (diff < 7 * day) return `${Math.floor(diff / day)}天前`;
+    return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, "0")}-${String(t.getDate()).padStart(2, "0")}`;
+  }
+
+  /** 初始化标签栏 + 首页默认视图（skipFetch：空数据模式不请求） */
+  function initTabs(skipFetch) {
+    renderTabbar();
+    showView("home");
+    if (skipFetch) {
+      $("homeContent").innerHTML = `<div class="placeholder">空数据模式：首页数据未加载</div>`;
+      return;
+    }
+    homeNav("works");
+  }
+
   /* ================= 启动 ================= */
   async function init() {
+    // 注：不再使用 documentElement.style.zoom 放大 —— zoom 会同时放大布局尺寸，
+    // 导致 getBoundingClientRect 返回视觉宽(×1.15)而 style.width 设置 CSS 像素，
+    // 两者体系不一致 → 三栏总宽溢出容器 → 默认水平滚动条 + 内容截断。
+    // （Tauri WebView2 字体偏小问题另寻方案，不在此缩放布局）
     bind();
     // 主题初始化:本地记忆优先,默认浅色
-    applyTheme(localStorage.getItem("nw-theme") || "light");
+    applyTheme(safeGet("nw-theme") || "light");
+    // Vditor 需在可见容器中初始化（隐藏容器尺寸为 0）；临时显示，initTabs 会切回首页
+    $("pageWorkspace").style.display = "flex";
     initEditor();
     initSplitters(); // 四栏可拖宽 + 右栏内两块可拖高
     // 空数据模式（?empty=1）：只渲染布局骨架，不加载任何外部数据（用于布局验证）
     const emptyMode = new URLSearchParams(location.search).get("empty") === "1";
     if (emptyMode) {
-      $("envStatus").textContent = "空数据模式（未加载外部数据）";
-      $("envStatus").className = "env-status warn";
-      $("modelSelect").innerHTML = '<option value="">(空模式)</option>';
+      $("envStatus").textContent = "○ LLM 未就绪";
+      $("envStatus").className = "env-status env-status-nav err";
       $("refPoolList").innerHTML = '<span class="muted">空数据模式：参考书未加载</span>';
       $("outlineList").innerHTML = '<div class="placeholder">空数据模式：书/章节未加载</div>';
       if (vditor) vditor.setValue("/* 空数据模式：仅布局验证 */");
+      initTabs(true); // 标签栏 + 首页骨架（不 fetch 数据，首页留占位）
       return; // 跳过所有数据加载
     }
+    initTabs(); // 标签栏 + 首页（默认视图：小说作品）
     loadConfig();
     loadRefPool(); // 参考书池(跨书参考源选择)
     loadBooks();   // 我的书(mybook 资产区)
