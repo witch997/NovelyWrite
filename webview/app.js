@@ -419,7 +419,7 @@
   let vditor = null;
   /** 在光标处插入文本（Vditor insertValue，IR 模式正确保持焦点；引号/分隔符用） */
   function insertAtCursor(prefix, suffix = "") {
-    if (!vditor) return;
+    if (!vditor || !state.currentBook || !state.currentChapter) return; // 未选中章节 → 禁止插入
     vditor.focus();
     vditor.insertValue(prefix + suffix);
     autoSave();
@@ -477,8 +477,25 @@
       after: () => {
         $("wordCount").textContent = "0 字";
         applyEditorFontSize(); // 初始化后应用已保存的字号
+        applyEditorLock();     // 未选中章节 → 立即锁定编辑器
       },
     });
+  }
+
+  /** 编辑锁（幂等）：未选中书/章节 → 显示遮罩盖住编辑器（无法点击/输入）；
+   * 选中章节 → 移除遮罩，正常显示与编辑章节内容（空内容也正常显示）。
+   * 仅靠遮罩拦截交互，不操作 Vditor 内部 contenteditable。 */
+  function applyEditorLock() {
+    const lockEl = $("editorLock");
+    if (!lockEl) return;
+    const locked = !state.currentBook || !state.currentChapter;
+    lockEl.style.display = locked ? "flex" : "none";
+    if (locked) {
+      // 锁定瞬间移走编辑器残留焦点（防止切书/无章时键盘仍打进编辑器）
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      const t = $("currentChapterTitle");
+      if (t) t.textContent = state.currentBook ? "（未选择章节）" : "（未选择书）";
+    }
   }
 
   /* ================= 写作台字号调节 ================= */
@@ -516,15 +533,19 @@
     saveTimer = setTimeout(() => saveChapter(true), 800); // 输入停顿立即保存（即时保护）
   }
 
-  /** 保存当前章节到 mybook 资产区（静默模式不打扰 UI） */
+  /** 保存当前章节到 mybook 资产区（静默模式不打扰 UI）
+   * 防误覆写：与上次加载/保存内容一致时跳过（不空转写盘；空编辑器对已有正文的
+   * 自动保存由 server 端 BLANK_OVERWRITE_GUARD 二次拦截） */
   async function saveChapter(silent) {
     if (!state.currentBook || !state.currentChapter || !vditor) return;
     const content = vditor.getValue();
+    if (state.lastSaved && state.lastSaved.num === state.currentChapter && state.lastSaved.content === content) return;
     try {
       await api(`/api/books/${encodeURIComponent(state.currentBook)}/chapters/${state.currentChapter}`, {
         method: "PUT",
         body: JSON.stringify({ content }),
       });
+      state.lastSaved = { num: state.currentChapter, content };
       if (!silent) toast("✅ 已保存到 mybook");
       scheduleChapterRefresh(); // 保存后刷新左侧章节表（防抖合并，避免输入连发刷屏）
     } catch (e) {
@@ -587,10 +608,11 @@
     try {
       const d = await api("/api/books");
       state.books = d.books || [];
-      if (!state.books.length) {
+      if (state.books.length === 0) {
         state.currentBook = null;
         updateBookName("");
         renderOutline();
+        applyEditorLock(); // 无书 → 编辑器锁定（提示选择书/章节）
         return;
       }
       // 保持当前选择（或恢复上次打开的书；都没有则默认第一本）
@@ -614,6 +636,7 @@
   async function loadBookDetail(name) {
     state.currentBook = name;
     state.currentChapter = null;
+    applyEditorLock(); // 切书瞬间锁住编辑器（旧章内容不误写），新章加载成功后再解锁
     const d = await api(`/api/books/${encodeURIComponent(name)}`);
     state.chapters = d.chapters || [];
     renderOutline();
@@ -629,7 +652,7 @@
       openChapter(target ?? state.chapters[0].num);
     } else if (vditor) {
       vditor.setValue("");
-      $("currentChapterTitle").textContent = `${name} · 未命名`;
+      $("currentChapterTitle").textContent = `${name} · 请选择章节`;
     }
   }
 
@@ -693,15 +716,22 @@
     await flushSave(); // 切换章节前保存当前编辑器内容（防未保存丢失）
     state.currentChapter = num;
     renderOutline();
+    clearTimeout(saveTimer); // 取消上一章遗留的待触发自动保存，防内容串章/空保存
     try {
       safeSet("nw-last-open", JSON.stringify({ book: state.currentBook, chapter: num }));
     } catch { /* ignore */ }
     try {
       const d = await api(`/api/books/${encodeURIComponent(state.currentBook)}/chapters/${num}`);
       if (vditor) vditor.setValue(d.content || "");
+      state.lastSaved = { num, content: d.content || "" }; // 记录已加载内容（未变化时不重复 PUT）
       $("currentChapterTitle").textContent = `${state.currentBook} · ${d.title || `第${pad4(num)}章`}`;
+      applyEditorLock(); // 已选中章节 → 解锁编辑
     } catch (e) {
       $("currentChapterTitle").textContent = `第${pad4(num)}章`;
+      // 读取失败：清空编辑器，避免把上一章残留内容 flush 进本章
+      if (vditor) vditor.setValue("");
+      state.lastSaved = { num, content: "" };
+      applyEditorLock(); // 章节仍视为选中（可输入新内容后重存）
       toast(`读取章节失败: ${e.message}`);
     }
   }

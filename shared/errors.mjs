@@ -59,6 +59,7 @@ export const E = {
   SYNTAX_FAILED: "SYNTAX_FAILED", // JSON 语法校验失败
   CONTRACT_FAILED: "CONTRACT_FAILED", // 契约校验失败（章级/聚合层）
   NOT_FOUND: "NOT_FOUND", // 通用：找不到目标（书/章/会话）
+  BLANK_OVERWRITE_GUARD: "BLANK_OVERWRITE_GUARD", // 空内容保存防护：章节已有正文时拒绝纯空白覆写（2026-09-04 mybook 空保存事故后新增）
 };
 
 /** 错误码 → 默认 message + 用户提示（可被实例覆盖） */
@@ -84,6 +85,7 @@ const E_DEFAULT = {
   SYNTAX_FAILED: { message: "JSON 语法校验失败", hint: "检查对应 JSON 文件" },
   CONTRACT_FAILED: { message: "契约校验未通过", hint: "查看校验报告定位问题章节" },
   NOT_FOUND: { message: "未找到目标", hint: "检查名称/编号是否正确" },
+  BLANK_OVERWRITE_GUARD: { message: "空内容保存已被拦截", hint: "该章节在磁盘上仍有正文，已拒绝用空白内容覆写（自动保存误触发常见）；确需清空请直接删除章节文件" },
 };
 
 /**

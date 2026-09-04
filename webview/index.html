@@ -65,6 +65,10 @@
       </div>
       <div class="pane-body editor-wrap">
         <div id="vditor"></div>
+        <!-- 未选中章节时的编辑锁层：盖住编辑器（含工具栏），提示选择章节 -->
+        <div class="editor-lock" id="editorLock" style="display:none">
+          <div class="editor-lock-tip">← 请先在左侧选择章节<br><small>未选择章节时不可输入</small></div>
+        </div>
       </div>
     </div>
     <div class="splitter-v" data-split="draft"></div>

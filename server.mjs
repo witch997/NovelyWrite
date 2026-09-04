@@ -401,13 +401,23 @@ function apiGetChapter(name, num) {
   return { name, num, title: tm ? tm[1].trim() : null, content };
 }
 
-/** PUT /api/books/:name/chapters/:n {content} — 保存章节内容 */
+/** PUT /api/books/:name/chapters/:n {content, force?} — 保存章节内容
+ * 空内容防护（2026-09-04）：若磁盘章节已有实质正文，拒绝纯空白内容覆写——
+ * 防前端空编辑器自动保存（输入停顿/定时/切章 flushSave）把原稿清成 1 字节。
+ * 确有清空意图时传 force:true 显式绕过。 */
 function apiSaveChapter(name, num, body) {
   const dir = ensureBook(name);
   if (!Number.isInteger(num) || num < 1 || num > 9999) throw new NovelyError("ARG_INVALID", { context: { field: "num", value: num } });
   const file = chapterFile(dir, num);
   if (!fs.existsSync(file)) throw new NovelyError("NOT_FOUND", { context: { name, num, kind: "chapter" } });
   if (typeof body?.content !== "string") throw new NovelyError("ARG_REQUIRED", { context: { field: "content" } });
+  const incomingBlank = body.content.replace(/\s/g, "").length === 0;
+  if (incomingBlank && !body?.force) {
+    const existing = fs.readFileSync(file, "utf-8");
+    if (existing.replace(/\s/g, "").length > 0) {
+      throw new NovelyError("BLANK_OVERWRITE_GUARD", { context: { name, num, size: existing.length } });
+    }
+  }
   fs.writeFileSync(file, body.content, "utf-8");
   return { ok: true, name, num, savedAt: new Date().toISOString() };
 }

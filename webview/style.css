@@ -320,10 +320,29 @@ body {
 }
 
 /* 中栏编辑器（保存/清空在头部） */
-.editor-wrap { padding: 0; background: var(--bg-base); }
+.editor-wrap { padding: 0; background: var(--bg-base); position: relative; }
 #vditor { height: 100%; }
 .editor-actions { display: flex; align-items: center; gap: 8px; }
 .word-count { font-size: 15px; color: var(--label-tertiary); font-variant-numeric: tabular-nums; margin-right: 4px; }
+
+/* 编辑锁层：未选中章节时盖住编辑器（含 Vditor 工具栏），提示选择章节并拦截一切输入 */
+.editor-lock {
+  position: absolute; inset: 0; z-index: 40;
+  background: color-mix(in srgb, var(--bg-base) 72%, transparent);
+  backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+  cursor: default;
+}
+.editor-lock-tip {
+  text-align: center; font-size: 17px; font-weight: 600;
+  color: var(--label-secondary); letter-spacing: 0.5px;
+  user-select: none; pointer-events: none;
+  padding: 18px 30px; border-radius: var(--radius);
+  background: var(--bg-module); border: 1px dashed var(--border-strong);
+  box-shadow: var(--shadow-sm);
+  line-height: 1.7;
+}
+.editor-lock-tip small { display: block; margin-top: 6px; font-size: 12px; font-weight: 400; color: var(--label-tertiary); }
 
 /* 右栏 AI：输入区 + 参考书区 + 一条拖拽条全部绝对定位（JS 统一排布，物理上不可能跨栏/覆盖） */
 #aiPanel { position: relative; overflow: hidden; }
