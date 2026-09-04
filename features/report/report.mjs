@@ -6,11 +6,13 @@
  *
  * 页面结构（精简版）：
  *   顶栏：书名 + 统计
- *   全书梗概：一段概括全书的话（优先卷纲 goal——刮削器式：把散落元数据聚合为简介）
- *   统计卡：章节数 / 分镜数 / 句子数（无平均、无悬念）
+ *   全书梗概：一段概括全书的话（LLM 联网搜证 + 前 N 章 summary 综合；指纹缓存）
+ *   统计卡：章节数 / 分镜数 / 句子数
  *   页脚
  *
  * 原则：summary 是唯一权威事实；本模块只投影不篡改；缺数据段自动降级。
+ * 2026-09-04：卷纲 volume.json 语义设计已移除——本模块不再读 卷纲/，梗概由
+ * buildSynopsis（LLM）按需生成（原「优先卷纲 goal」逻辑随 volume 一并删除）。
  *
  * 用法：
  *   import { buildReport } from "./report.mjs"
@@ -118,14 +120,11 @@ export async function buildReport(project) {
   let treeStats = null;
   try { treeStats = buildChapterTree(project); } catch (e) { treeStats = { error: e.message }; }
 
-  /* ---------- 数据装配（章节树 + 卷纲） ---------- */
+  /* ---------- 数据装配（章节树） ---------- */
   const index = loadChapterTreeIndex(project);
   const nodes = (index?.chapters ?? [])
     .map((c) => loadChapterNode(project, c.num))
     .filter(Boolean);
-  const volume = readJson(path.join(root, "卷纲", "volume.json"));
-  const targets = volume?.targets ?? [];
-  const mainTarget = targets.find((t) => t.isMain) ?? null;
 
   const chapterCount = nodes.length;
   const shotCount = nodes.reduce((a, n) => a + (n.shots?.length ?? 0), 0);
@@ -139,7 +138,7 @@ export async function buildReport(project) {
     synopsis = r.text;
   } catch (e) { synopsisError = e.message; }
 
-  const stats = { chapters: chapterCount, shots: shotCount, sentences: sentenceCount, mainTarget };
+  const stats = { chapters: chapterCount, shots: shotCount, sentences: sentenceCount };
 
   /* ================= HTML 组装（NovelyWrite 浅色风格，精简看板） ================= */
   const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");

@@ -11,9 +11,9 @@
  *   kb / "建立知识库" | "建库" | "知识库" | "扫描语料"
  *       → 扫描 corpus/ 语料 vs store/ 头文档（project-meta.json）对比，回传未建库语料
  *   annotate（标注，事实层）→ novelread/host-exec.mjs
- *   aggregate（聚合，阶段二）→ novelread/aggregates.mjs（默认增量，--full 逃生门）
+ *   aggregate（聚合，阶段二）→ novelread/aggregates.mjs（确定性：重算+终检+索引）
  *   check（校验）→ novelread/verify-json + check-chapter + aggregates --finalize-only
- *   fix（修复）→ novelread/fix.mjs（章级 / --aggregates 聚合层）
+ *   fix（修复）→ novelread/fix.mjs（章级字段修复）
  *
  * 规划任务（后续接入）：
  *   report（拆书报告） / write-shot（分镜参考写作）
@@ -259,16 +259,15 @@ function runAnnotate(args) {
 /* ================= 任务：aggregate（聚合，阶段二） ================= */
 
 /**
- * 聚合任务（阶段二：确定性重算 + 语义判定 + 终检 + 索引）：
- *   node cli.mjs aggregate <project>                → 默认增量（有快照时）或全量（首次）
- *   node cli.mjs aggregate <project> --full         → 强制全量（逃生门）
+ * 聚合任务（阶段二：确定性重算 + 终检 + 索引）：
+ *   node cli.mjs aggregate <project>                → 全量确定性重算
  *   node cli.mjs aggregate <project> --finalize-only → 只终检
  */
 function runAggregate(args) {
   const { positional, options } = parseArgs(args);
   const project = positional[0];
   if (!project) {
-    console.error("[cli] aggregate 需要 project：aggregate <project> [--full] [--finalize-only]");
+    console.error("[cli] aggregate 需要 project：aggregate <project> [--finalize-only]");
     return false;
   }
   let projectDir;
@@ -284,7 +283,6 @@ function runAggregate(args) {
   }
 
   const aggArgs = [project];
-  if (options.full) aggArgs.push("--full");
   if (options["finalize-only"]) aggArgs.push("--finalize-only");
   return runModule("aggregates.mjs", aggArgs);
 }
@@ -292,19 +290,21 @@ function runAggregate(args) {
 /* ================= 任务：fix（修复） ================= */
 
 /**
- * 修复任务（用户主动发起）：
+ * 修复任务（用户主动发起，章级字段修复）：
  *   node cli.mjs fix <project> <章号> [--limit=N] [--dry-run]
- *   node cli.mjs fix <project> --aggregates [--dry-run]
  */
 function runFix(args) {
   const { positional, options } = parseArgs(args);
   const project = positional[0];
   const chapter = positional[1] ?? options.chapter ?? null;
-  const aggregates = !!options.aggregates;
   const dryRun = !!options["dry-run"];
 
   if (!project) {
-    console.error("[cli] fix 需要 project：fix <project> <章号> | fix <project> --aggregates [--dry-run]");
+    console.error("[cli] fix 需要 project：fix <project> <章号> [--limit=N] [--dry-run]");
+    return false;
+  }
+  if (!chapter) {
+    console.error("[cli] fix 需要章号：fix <project> <章号> [--limit=N] [--dry-run]");
     return false;
   }
   let projectDir;
@@ -319,18 +319,9 @@ function runFix(args) {
     return false;
   }
 
-  const fixArgs = [];
-  if (aggregates) {
-    fixArgs.push(project, "--aggregates");
-    if (dryRun) fixArgs.push("--dry-run");
-  } else if (chapter) {
-    fixArgs.push(project, String(chapter));
-    if (options.limit) fixArgs.push(`--limit=${options.limit}`);
-    if (dryRun) fixArgs.push("--dry-run");
-  } else {
-    console.error("[cli] fix 需要章号或 --aggregates：fix <project> <章号> | fix <project> --aggregates [--dry-run]");
-    return false;
-  }
+  const fixArgs = [project, String(chapter)];
+  if (options.limit) fixArgs.push(`--limit=${options.limit}`);
+  if (dryRun) fixArgs.push("--dry-run");
   return runModule("fix.mjs", fixArgs);
 }
 
@@ -339,9 +330,9 @@ function runFix(args) {
 const TASK_HELP = {
   kb: "扫描语料 vs store 两域头文档，对比建库状态",
   annotate: "标注：annotate <project> --all | --chapter=N[,M...] [--domain=ex|my]",
-  aggregate: "聚合：aggregate <project> [--full] [--finalize-only]",
+  aggregate: "聚合：aggregate <project> [--finalize-only]",
   check: "校验：check [project] [--chapter=N] [--syntax-only]",
-  fix: "修复：fix <project> <章号> | fix <project> --aggregates [--dry-run]",
+  fix: "修复：fix <project> <章号> [--limit=N] [--dry-run]",
 };
 
 function printUsage() {
@@ -365,12 +356,10 @@ NovelyWrite 统一 CLI
   node cli.mjs annotate 大王饶命 --chapter=88,89,90
   node cli.mjs annotate 我的书 --all --domain=my
   node cli.mjs aggregate 大王饶命
-  node cli.mjs aggregate 大王饶命 --full
   node cli.mjs check 大王饶命
   node cli.mjs check 大王饶命 --chapter=1
   node cli.mjs check 大王饶命 --syntax-only
   node cli.mjs fix 大王饶命 83
-  node cli.mjs fix 大王饶命 --aggregates --dry-run
 `);
 }
 

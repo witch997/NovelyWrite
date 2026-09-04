@@ -11,10 +11,8 @@
  *   import { loadSkillSlice } from "../shared/skill-slice.mjs";
  *   const skill = loadSkillSlice("sentence");        // 往返1
  *   const skill = loadSkillSlice("shot-chapter");    // 往返2
- *   const skill = loadSkillSlice("event");           // 聚合调用①
- *   const skill = loadSkillSlice("volume");          // 聚合调用②
- *   const skill = loadSkillSlice("incremental");     // 增量合并判定
  *   const skill = loadSkillSlice("full");            // 全文（调试/兜底）
+ *   （2026-09-04：event/volume/incremental 切片已随聚合层语义设计一并移除）
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -74,36 +72,12 @@ const LAYER_MAP = {
     "### 分镜层 `dsh/shot-card/v1`",
     "### 章节层 `dsh/chapter-annotation/v1`",
   ],
-  // 聚合调用①：大事件（全量生成，不需要增量段落）
-  event: [
-    "## 角色与任务",
-    "### 模型调用约定",
-    "### 第4步：大事件分析",
-    "### 大事件层 `dsh/event-card/v1`",
-    "## 聚合层（阶段二",
-  ],
-  // 聚合调用②：单卷层（全量生成，不需要增量段落）
-  volume: [
-    "## 角色与任务",
-    "### 模型调用约定",
-    "### 第5步：卷纲生成",
-    "### 单卷层 `dsh/volume-card/v1`",
-    "## 聚合层（阶段二",
-  ],
-  // 增量合并判定：增量更新 + 两层契约
-  incremental: [
-    "## 角色与任务",
-    "### 模型调用约定",
-    "### 大事件层 `dsh/event-card/v1`",
-    "### 单卷层 `dsh/volume-card/v1`",
-    "## 聚合层（阶段二",
-    "### 聚合层·增量更新",
-  ],
+  // 2026-09-04：聚合层语义切片（event/volume/incremental）已随 event/volume 设计移除
 };
 
 /**
  * 加载 SKILL 切片
- * @param {string} layer sentence | shot-chapter | event | volume | incremental | full
+ * @param {string} layer sentence | shot-chapter | full
  * @returns {string} system prompt 文本
  */
 export function loadSkillSlice(layer) {

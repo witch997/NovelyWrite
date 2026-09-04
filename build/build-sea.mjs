@@ -20,6 +20,9 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 
+// 防误 import：仅直接运行（node build/build-sea.mjs）时执行打包；被 import 时静默跳过（无副作用）
+if (!(process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))) process.exit(0);
+
 // 1. rollup bundle（ESM → CJS；import.meta.url 由 rollup 转为 pathToFileURL(__filename)）
 console.log("[sea] rollup bundle → sea-bundle.cjs ...");
 const rollupCmd = process.platform === "win32"

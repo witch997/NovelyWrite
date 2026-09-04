@@ -38,7 +38,6 @@ function argsOfAggregate(b) {
   const a = [];
   if (!b?.project) throw new NovelyError("ARG_REQUIRED", { context: { field: "project" } });
   a.push(b.project);
-  if (b.full) a.push("--full");
   if (b.finalizeOnly) a.push("--finalize-only");
   return a;
 }
@@ -47,9 +46,10 @@ function argsOfFix(b) {
   const a = [];
   if (!b?.project) throw new NovelyError("ARG_REQUIRED", { context: { field: "project" } });
   a.push(b.project);
-  if (b.aggregates) { a.push("--aggregates"); if (b.dryRun) a.push("--dry-run"); }
-  else if (b.chapter) { a.push(String(b.chapter)); if (b.limit) a.push(`--limit=${b.limit}`); if (b.dryRun) a.push("--dry-run"); }
-  else throw new NovelyError("ARG_REQUIRED", { context: { field: "chapter|aggregates" } });
+  if (!b.chapter) throw new NovelyError("ARG_REQUIRED", { context: { field: "chapter" } });
+  a.push(String(b.chapter));
+  if (b.limit) a.push(`--limit=${b.limit}`);
+  if (b.dryRun) a.push("--dry-run");
   return a;
 }
 

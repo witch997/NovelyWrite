@@ -305,9 +305,7 @@ function bodyFromArgs(args) {
   if (projectArg) body.projects = projectArg.split(",");
   const topk = argVal("topk");
   if (topk) body.topk = Number(topk);
-  if (args.includes("--full")) body.full = true;
   if (args.includes("--finalize-only")) body.finalizeOnly = true;
-  if (args.includes("--aggregates")) body.aggregates = true;
   if (args.includes("--dry-run")) body.dryRun = true;
   const limit = argVal("limit");
   if (limit) body.limit = Number(limit);
@@ -358,7 +356,7 @@ function annotateRangeState(args) {
     }
   }
   if (!todo?.length) return null;
-  // 3. 已标注章（扫 章节/ 目录，排除 章节表.json）
+  // 3. 已标注章（扫 章节/ 目录；正则只匹配 第XXXX章.json，章节表.json 已移除/天然不匹配）
   const done = new Set();
   const chDir = path.join(projectRoot(corpus, domain), "章节");
   if (fs.existsSync(chDir)) {

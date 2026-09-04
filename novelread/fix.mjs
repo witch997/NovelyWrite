@@ -4,12 +4,10 @@
  * 定位：错误孤立在单个文件的单个字段（枚举值/长度/单个值），修复不依赖其他层、不改映射。
  *   检测 → LLM 只输出"修正补丁"（JSON 路径定位 + 新值，不重生成文件）→ 脚本应用 → gate → 复检。
  *
- * 两种模式：
+ * 模式：
  *   <project> <章号>       章级：分镜 type/funcs、章节 function/state、句子 struct（少量）、
  *                              语法非法句子 JSON 重建（脚本，零 LLM）
- *   <project> --aggregates 聚合层：event.json 的 lifecycle.state/结束章/note、废弃字段清理；
- *                              卷纲/volume.json 的 targets.state/target/evidenceChapters/note、isMain 派生一致性、废弃字段清理
- *                              （temp 文件不参与改错检查）
+ *   （2026-09-04：--aggregates 聚合层修复模式已随 event/volume 语义设计一并移除）
  *
  * 阈值：同一类型问题 ≤ 阈值（默认 5 处）走 LLM 字段级补丁；超过 → 不做补丁，
  *       输出具体问题提示（如 struct 混入 type 值可按 B4 规则脚本修、funcs/type 需 LLM 判定或重出文件）。
@@ -18,7 +16,6 @@
  *
  * 用法：
  *   node novelread/fix.mjs <project> <章号> [--limit=N] [--dry-run]
- *   node novelread/fix.mjs <project> --aggregates [--dry-run]
  *   --dry-run 只检测+生成问题清单，不调 LLM 不落盘
  */
 import fs from "node:fs";
@@ -27,27 +24,26 @@ import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { checkJsonText } from "./verify-json.mjs";
 import { deriveChapter } from "./derive-chapter.mjs";
-import { STRUCTS, SHOT_TYPES, SHOT_FUNCS, CHAPTER_FUNCS, MAINLINE_STATES, TARGET_STATES } from "./enums.mjs";
+import { STRUCTS, SHOT_TYPES, SHOT_FUNCS, CHAPTER_FUNCS } from "./enums.mjs";
 import { projectRoot, cliArgs, runScriptArgs } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
-let args, project, aggregatesMode, ch, dryRun, limit, projectDir, chStr; // 惰性初始化（被 import 时不可有副作用）
+let args, project, ch, dryRun, limit, projectDir, chStr; // 惰性初始化（被 import 时不可有副作用）
 
 /** 解析 CLI 参数（延迟到 main 调用——被 sea-main import 时无参数，不能执行 projectRoot/exit） */
 function parseArgs() {
   if (projectDir) return;
   args = cliArgs(); // SEA 分发兼容（过滤 "run <script>" 前缀）
   project = args.find((a) => !a.startsWith("--"));
-  aggregatesMode = args.includes("--aggregates");
   ch = Number(args.find((a) => /^\d+$/.test(a)));
   dryRun = args.includes("--dry-run");
   limit = Number((args.find((a) => a.startsWith("--limit=")) ?? "--limit=5").split("=")[1]);
-  if (!project || (!Number.isInteger(ch) && !aggregatesMode)) {
-    console.error("用法: node novelread/fix.mjs <project> <章号> [--limit=N] [--dry-run] | <project> --aggregates [--dry-run]");
+  if (!project || !Number.isInteger(ch)) {
+    console.error("用法: node novelread/fix.mjs <project> <章号> [--limit=N] [--dry-run]");
     process.exit(2);
   }
   projectDir = projectRoot(project); // 域感知：两域自动探测
-  chStr = aggregatesMode ? "" : String(ch).padStart(4, "0");
+  chStr = String(ch).padStart(4, "0");
   chatCfg = loadChatConfig(); // 惰性读配置（parseArgs 后）
   baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
 }
@@ -71,48 +67,7 @@ export async function main() {
   parseArgs(); // 惰性解析 CLI 参数
   // [task] 进度协议行（task/manager.mjs 统一解析；同时进日志留痕）
   const taskLine = (d) => console.log(`[task] ${JSON.stringify(d)}`);
-  taskLine({ stage: "fix", phase: aggregatesMode ? "聚合层字段修复" : `章节字段修复（${chapterArg ?? ""}）` });
-/* ---------- 聚合层字段级检测（--aggregates 模式：event.json / 卷纲.json 的枚举/类型） ---------- */
-const aggIssues = [];
-if (aggregatesMode) {
-  const pushA = (file, loc, problem, current) => aggIssues.push({ file, loc, problem, current, context: "" });
-  const ev = readJson("大事件/event.json");
-  if (ev) {
-    (ev.lifecycle ?? []).forEach((lc, i) => {
-      if (!["悬置", "已回收"].includes(lc.state)) pushA("大事件/event.json", `lifecycle[${i}].state`, `lifecycleState 非法「${lc.state}」`, lc.state);
-      const end = lc["结束章"];
-      if (end !== null && end !== undefined && typeof end !== "number") pushA("大事件/event.json", `lifecycle[${i}].结束章`, "结束章非 int/null", String(end));
-      if (!(lc.note ?? "").trim()) pushA("大事件/event.json", `lifecycle[${i}].note`, "note 为空", "");
-      // 语义自洽（对齐 check）：state=已回收 ⟺ 结束章≠null；结束章 ∈ 持续章（或 null）
-      if (lc.state === "已回收" && end === null) pushA("大事件/event.json", `lifecycle[${i}].state`, "语义不自洽：state=已回收 但 结束章=null", lc.state);
-      if (lc.state === "悬置" && end !== null && end !== undefined) pushA("大事件/event.json", `lifecycle[${i}].state`, "语义不自洽：state=悬置 但 结束章≠null", lc.state);
-      if (end !== null && end !== undefined && typeof end === "number" && !(lc["持续章"] ?? []).includes(end)) pushA("大事件/event.json", `lifecycle[${i}].持续章`, "语义不自洽：结束章不在持续章内", String(end));
-    });
-    // 废弃字段：mainline/chapterIndex 不应存在
-    if ("mainline" in ev) pushA("大事件/event.json", "mainline", "废弃字段 mainline 应删除（已并入卷纲 targets）", "存在");
-    if ("chapterIndex" in ev) pushA("大事件/event.json", "chapterIndex", "废弃字段 chapterIndex 应删除（与章节表重复）", "存在");
-  }
-  const vol = readJson("卷纲/volume.json");
-  if (vol) {
-    (vol.targets ?? []).forEach((t, i) => {
-      if (!TARGET_STATES.includes(t.state)) pushA("卷纲/volume.json", `targets[${i}].state`, `targetState 非法「${t.state}」（确立/推进/达成/搁置/失败）`, t.state);
-      if (!(t.target ?? "").trim()) pushA("卷纲/volume.json", `targets[${i}].target`, "target 为空", "");
-      if (!Array.isArray(t.evidenceChapters)) pushA("卷纲/volume.json", `targets[${i}].evidenceChapters`, "evidenceChapters 非数组", String(t.evidenceChapters));
-      if (!(t.note ?? "").trim()) pushA("卷纲/volume.json", `targets[${i}].note`, "note 为空", "");
-    });
-    // 废弃字段：eventStructure/mainline 不应存在
-    if ("eventStructure" in vol) pushA("卷纲/volume.json", "eventStructure", "废弃字段 eventStructure 应删除（事件跨章判断已归 event.json）", "存在");
-    if ("mainline" in vol) pushA("卷纲/volume.json", "mainline", "废弃字段 mainline 应删除（已并入 targets）", "存在");
-    // isMain 派生一致性：唯一且为命中章节最多者
-    const targets = vol.targets ?? [];
-    const mainT = targets.filter((t) => t.isMain === true);
-    if (mainT.length !== 1) pushA("卷纲/volume.json", "targets.isMain", `isMain 应唯一（现 ${mainT.length} 个）`, String(mainT.length));
-    else if (targets.length) {
-      const maxLen = Math.max(...targets.map((t) => (t.evidenceChapters ?? []).length));
-      if ((mainT[0].evidenceChapters ?? []).length !== maxLen) pushA("卷纲/volume.json", "targets.isMain", "isMain 非命中章节最多者（应由脚本派生，勿手改）", mainT[0].target);
-    }
-  }
-}
+  taskLine({ stage: "fix", phase: `章节字段修复（第${ch}章）` });
 
 // 分镜层
 const shotJson = readJson(`分镜标注/json/第${chStr}章.json`);
@@ -133,12 +88,8 @@ const chJson = readJson(`章节/第${chStr}章.json`);
 if (chJson) {
   if (!CHAPTER_FUNCS.includes(chJson.function)) push(`章节/第${chStr}章.json`, "function", `function 非法「${chJson.function}」`, chJson.function, "");
   if (!chJson.summary || !chJson.summary.trim()) push(`章节/第${chStr}章.json`, "summary", "summary 为空", "", "");
-  (chJson.mainlineProgress ?? []).forEach((m, i) => {
-    if (!MAINLINE_STATES.includes(m.state)) push(`章节/第${chStr}章.json`, `mainlineProgress[${i}].state`, `state 非法「${m.state}」`, m.state, m.entity ?? "");
-  });
+  // 2026-09-04：mainlineProgress.state 修复已移除（字段随聚合层删除）
 }
-
-// 事件层（按章事件已删除——大事件信息由聚合层 event.json 主文件承载，无章级事件文件）
 
 // 句子层（仅少量 struct 错走字段级；大量错单独统计并提示）
 const sentJson = readJson(`句子标注/json/第${chStr}章.json`);
@@ -177,7 +128,6 @@ for (const i of issues) {
 const tooMany = Object.entries(typeCount).filter(([, n]) => n > limit).map(([k, n]) => `${k}×${n}`);
 const fieldIssues = issues.filter((i) => !(i.problem.includes("struct") && typeCount.struct > limit));
 
-if (!aggregatesMode) {
   console.log(`\n========== 修错脚本（字段级修复）：${project} 第${chStr}章 ==========`);
   console.log(`检测到字段级问题 ${issues.length} 项`);
   // B4 规则修复结果
@@ -201,7 +151,6 @@ if (!aggregatesMode) {
   if (!issues.length && !rebuilt && !B4_FIXED.length) { console.log("✅ 无字段级问题"); process.exit(0); }
   for (const i of issues) console.log(`  ✗ ${i.file} @ ${i.loc}: ${i.problem}${i.context ? `（${i.context}）` : ""}`);
   if (dryRun) { console.log("\n（--dry-run，不调 LLM 不落盘）"); process.exit(0); }
-}
 
 /* ---------- LLM 客户端（thinking 禁用，与 host 一致） ---------- */
 let chatCfg = null, baseUrl = ""; // 惰性（被 import 时不可读 config；parseArgs 后赋值）
@@ -332,83 +281,6 @@ async function finalizeChapter() {
   process.exit(chapterOk ? 0 : 1);
 }
 
-  // 聚合层模式（--aggregates）：event.json / 卷纲.json 字段级修复
-  if (aggregatesMode) {
-    console.log(`\n========== 修错脚本（聚合层字段级）：${project} ==========`);
-    console.log(`检测到聚合层字段级问题 ${aggIssues.length} 项`);
-    for (const i of aggIssues) console.log(`  ✗ ${i.file} @ ${i.loc}: ${i.problem}`);
-    if (!aggIssues.length) { console.log("✅ 无聚合层字段级问题"); process.exit(0); }
-    if (dryRun) { console.log("\n（--dry-run，不调 LLM 不落盘）"); process.exit(0); }
-
-    const problemText = aggIssues.map((i, n) =>
-      `${n + 1}. ${i.file} @ ${i.loc}: ${i.problem}\n   当前值: ${String(i.current).slice(0, 200)}`
-    ).join("\n");
-    const userMsg = [
-      "## 任务：聚合层字段级修复",
-      "以下问题均为聚合层（event.json / 卷纲.json）的单字段枚举/类型错误，最小改动修正，不重生成文件。",
-      "",
-      "## 合法枚举",
-      `lifecycleState: 悬置/已回收`,
-      `targetState: 确立/推进/达成/搁置/失败`,
-      "结束章：int 或 null（null = 未了结，不得填字符串）。",
-      "废弃字段（mainline/chapterIndex/eventStructure）：`新值` 填字符串 `__DELETE__` 表示删除该字段。",
-      "",
-      "## 问题清单",
-      problemText,
-      "",
-      "## 输出格式",
-      '{"修正":[{"文件":"<相对路径>","定位":"<JSON路径>","新值":<修正后的值>}]}',
-      "只输出这个 JSON 对象，不要任何其他内容。",
-    ].join("\n");
-
-    console.log("\n[fix] 调用 LLM 定向修复（聚合层字段）...");
-    const raw = await chat([
-      { role: "system", content: "你是网文标注修复器：只做最小改动的字段级修正，严格遵守枚举与类型约束。" },
-      { role: "user", content: userMsg },
-    ]);
-    console.log(`[fix] LLM 返回 ${raw.length} 字符`);
-    let payload;
-    try {
-      let cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
-      payload = JSON.parse(cleaned);
-    } catch (e) {
-      console.error(`[fix] 补丁解析失败: ${e.message}\n原始: ${raw.slice(0, 300)}`);
-      process.exit(1);
-    }
-    const patches = payload.修正 ?? [];
-    if (!patches.length) { console.error("[fix] LLM 未返回修正项"); process.exit(1); }
-    const byFile = {};
-    for (const p of patches) {
-      if (!p?.文件 || !p?.定位) { console.warn(`  ⚠ 跳过无效补丁: ${JSON.stringify(p)}`); continue; }
-      (byFile[p.文件] ??= []).push(p);
-    }
-    for (const [rel, list] of Object.entries(byFile)) {
-      const p = path.join(projectDir, rel);
-      if (!fs.existsSync(p)) { console.error(`  [✗] ${rel} 不存在`); continue; }
-      const obj = JSON.parse(fs.readFileSync(p, "utf-8"));
-      for (const pt of list) {
-        try { applyPatch(obj, pt.定位, pt.新值); console.log(`  [补丁] ${rel} @ ${pt.定位} → ${JSON.stringify(pt.新值).slice(0, 80)}`); }
-        catch { console.error(`  [✗] ${rel} @ ${pt.定位} 定位失败`); }
-      }
-      const text = JSON.stringify(obj, null, 2) + "\n";
-      const v = checkJsonText(text);
-      if (!v.ok) { console.error(`  [gate✗] ${rel} 修正后语法非法: ${v.kind} → 未落盘`); continue; }
-      fs.writeFileSync(p, text, "utf-8");
-      console.log(`  [写] ${rel}`);
-    }
-    // 终检（聚合层修复后刷新头文档；无章级派生）
-    console.log("\n[fix] 终检（aggregates --finalize-only，刷新 project-meta.json）...");
-    try {
-      const [rCmd, rArgs, rEnv] = runScriptArgs("novelread/aggregates.mjs", [project, "--finalize-only"]); const out = execFileSync(rCmd, rArgs, { encoding: "utf-8", env: rEnv });
-      console.log(out.trim());
-    } catch (e) {
-      console.log((e.stdout ?? "").toString().trim());
-    }
-    console.log(`\n✅ 聚合层字段级修复完成（project-meta.json 已刷新）`);
-    taskLine({ stage: "done", phase: "聚合层修复完成" });
-    process.exit(0);
-  }
-
   // 语法修复分支：句子 JSON 语法非法 → 脚本重建外壳（保留提取的内容，零 LLM，不走重跑）
   if (rebuilt) {
     console.log(`\n========== 语法修复：${project} 第${chStr}章 句子 JSON（原文件语法非法） ==========`);
@@ -441,7 +313,6 @@ async function finalizeChapter() {
     `type: ${SHOT_TYPES.join("/")}`,
     `funcs: ${SHOT_FUNCS.join("/")}`,
     `function: ${CHAPTER_FUNCS.join("/")}`,
-    `mainlineState: ${MAINLINE_STATES.join("/")}`,
     `struct: ${STRUCTS.join("/")}`,
     "label ≤10 字；summary ≤400 字（超长需压缩，保留关键情节）。",
     "",
@@ -480,7 +351,7 @@ async function finalizeChapter() {
   let applied = 0, rejected = 0;
   for (const [rel, list] of Object.entries(byFile)) {
     const p = path.join(projectDir, rel);
-    // 读前语法门（对齐 aggregates.applyInstructions）：非法 → 跳过该文件，不崩溃
+    // 读前语法门：非法 → 跳过该文件，不崩溃
     if (!fs.existsSync(p)) { rejected += list.length; console.error(`  [✗] ${rel} 不存在 → 跳过该文件`); continue; }
     const rawText = fs.readFileSync(p, "utf-8");
     const preV = checkJsonText(rawText);

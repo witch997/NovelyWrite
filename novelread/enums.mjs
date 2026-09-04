@@ -8,5 +8,5 @@ export const STRUCTS = ["短句", "句从"];
 export const SHOT_TYPES = ["信息", "对话", "心理", "动作", "事件", "环境"];
 export const SHOT_FUNCS = ["塑造人物", "引入世界观", "设置动机", "推进", "铺垫", "反转", "爆发", "转场", "收束分镜", "悬念"];
 export const CHAPTER_FUNCS = ["开端", "推进", "铺垫", "爆发", "转折", "收束章节", "过渡"];
-export const MAINLINE_STATES = ["主线启动", "推进", "受阻", "达成", "更换"];
-export const TARGET_STATES = ["确立", "推进", "达成", "搁置", "失败"];
+// 2026-09-04：TARGET_STATES（卷纲 targets）已随 volume.json 语义设计移除
+// 2026-09-04：MAINLINE_STATES（mainlineProgress）已移除——跨章主线判定随聚合层删除，字段无消费方（章节表不再承载）

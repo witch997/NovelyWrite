@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env node
+#!/usr/bin/env node
 // v0.8.0 — mac 构建脚本（2026-08-31 更新触发 Actions 重建）
 /**
  * build-mac.mjs — macOS 单文件应用构建（rollup bundle → 官方 node:sea → postject → .app 打包）
@@ -33,6 +33,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url)); // build/
+
+// 防误 import：仅直接运行（node build/build-mac.mjs）时执行打包；被 import 时静默跳过（无副作用）
+if (!(process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))) process.exit(0);
+
 const APP_NAME = "NovelyWrite";
 const FUSE = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 

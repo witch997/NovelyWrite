@@ -5,7 +5,7 @@
 ## 架构位置
 
 ```
-L1 语料处理（novelread/）   → 产出标注（两往返 + 硬闸门）
+L1 语料处理（novelread/）   → 产出标注（两往返 + 硬闸门）+ 确定性聚合（清单/缺章/终检/头文档）
 L2 数据访问（store/）       → JSON + project-meta.json（头文档）
 L3 检索器（retriever/）     → 三通道召回（label/token/vec）
 L4 功能层（features/） ★    → 消费 L2/L3 做业务
@@ -18,46 +18,61 @@ L4 功能层（features/） ★    → 消费 L2/L3 做业务
 3. **复用 L3 检索**：需要"找参考"时走 `retriever/`（三通道），不自己碰向量库/词典
 4. **产物不落 store**：报告/生成稿输出到消费端（如 output/ 或直接打印）
 
-## 目录规划
+## 目录结构
 
 ```
 features/
 ├── README.md              # 本文件
-├── report/                # 拆书报告（读 store → 人类可读报告）
-├── shot-writing/          # ★ 分镜参考写作（章纲 → 分镜，消费 L3 三通道召回）
-└── （规划）rewrite/       # 生成稿按 SKILL 重写
-    （规划）analysis/      # 一致性检查 / 爽点定位 / 节奏诊断
+├── report/                # ★ 拆书报告（读 store → 人类可读看板 / 拆书地图 / 问答）
+│   ├── report.mjs         # buildReport：统计卡 + 全书梗概 + 章节树下钻（拆书看板 HTML）
+│   ├── chapter-tree.mjs   # 章节树索引（元数据节点 + 单章指纹增量重建，拆书时自动构建）
+│   ├── ask.mjs            # 拆书问答（retriever 程序粗筛 + LLM 精筛）
+│   └── demo.mjs           # 章节树 Demo 路由
+└── shot-writing/          # ★ 分镜参考写作（剧情需求 → 分镜 → 成稿，消费 L3 三通道召回）
+    ├── preprocess.mjs     # 剧情需求 → 结构化分镜序列（章纲）
+    ├── recall.mjs         # 逐镜三通道召回参考（限定书源 / 全库）
+    ├── writedraft.mjs     # 逐镜写作 + 全文整合成稿
+    └── style-stats.mjs    # 文风统计
 ```
 
 ## 拆书报告（report/）
 
-**定位**：消费 `store/<project>/` 的 JSON → 人类可读报告（**不落 store**，输出到消费端）。
+**定位**：消费 `store/<project>/` 的 JSON → 人类可读报告（**不落 store**，输出到消费端；server 暴露 `/api/report/:name`，前端拆书按钮开新窗口渲染）。
 
-**输入**：project-meta.json（进度/质量）+ 章节表/章节标注（summary）+ event.json（lifecycle/mainline）+ 卷纲.json（eventStructure）+ 分镜标注（funcs 扫悬念/爆发）
+**输入（2026-09-04 更新——章节表/大事件/卷纲语义已移除，不再读取该类产物）**：
+- project-meta.json（进度/缺章/质量状态）
+- 章节树索引（chapter-tree：章节元数据 + 单章指纹）
+- 章节标注 `summary`（跨章语义搜证的唯一权威输入——梗概 LLM 只吃 summary + 前 N 章摘要）
+- 分镜标注 funcs（扫悬念/爆发，统计与章节树组装）
 
-**报告内容（建议）**：
-- 项目概览（进度/缺章/质量状态，来自 project-meta）
-- 主线（event.json mainline + 章节表 mainlineProgress）
-- 事件线（event.json lifecycle：开始/持续/结束/悬置）
-- 章节摘要（章节表 chapters[].summary）
-- 爽点/悬念定位（扫分镜 funcs=爆发/悬念，按章/按镜）
-- 卷纲（卷纲.json eventStructure：事件 → 涉及章节）
+**报告内容**：
+- 统计卡：章节数 / 分镜数 / 句子数（数据来自章节树聚合）
+- 全书梗概：LLM 联网搜证定位作品 + 前 N 章 summary 综合直出（DeepSeek web_search；剧情只用摘要、禁全书剧情；指纹缓存——summary 变更才重调）
+- 章节树下钻：章节 → 分镜 → 句子三层浏览；章节带 summary 预览
+- 拆书问答（ask）：按章节范围/分镜层级程序粗筛 + LLM 精筛回答
 
-**实现形态**：脚本渲染（确定性，结构化数据直接组织）——可选 LLM 叙事化（后续）。
+**实现形态**：纯程序投影（章节树/统计）+ 可选 LLM 化（梗概 buildSynopsis / 问答 refine，均带超时与指纹缓存）。
+
+## 分镜参考写作（shot-writing/）
+
+**定位**：输入剧情需求 → 结构化分镜序列 → 逐镜三通道召回（retriever）→ 逐镜写作 → 全文整合成稿。
+- **参考书即风格选择器**：参考文本作「风格样例」注入（句式/口吻/修辞向参考靠拢，内容与专名不照搬）；勾选限定书源，不选 = 全库
+- 排版硬规范（短段/对话独占成段）不受风格跟随影响
+- 产出按会话归档，成稿直显可一键插入写作栏（详见 `shot-writing/README.md`）
 
 ## 与其他模块的关系
 
 | 调用方 | 被调用 | 方式 |
 |---|---|---|
-| features/report | store/<project>/*.json | import/读文件 |
+| features/report | store/<project>/*.json（章节树/章节标注/分镜标注） | import/读文件 |
 | features/report | store/<project>/project-meta.json | 读头文档 |
 | features/shot-writing | retriever/retriever.mjs | import（三通道召回） |
 | features/shot-writing | store/<project>/句子·分镜 JSON | 回源参考文本 |
-| features/rewrite（规划） | specs/章节写作-SKILL.md | 读规范 |
+| server.mjs | features/report（buildReport / buildChapterTree） | import + 路由 |
 
 ## 待办 / 规划
 
-- [ ] report/ 拆书报告实现（读 store → 报告）
-- [ ] shot-writing/ 分镜参考写作实现（意图 → 三通道召回 → LLM 写分镜）
+- [x] report/ 拆书报告实现（看板/拆书地图/章节树/问答）
+- [x] shot-writing/ 分镜参考写作实现（preprocess → recall → writedraft）
 - [ ] rewrite：生成稿按 SKILL 重写
 - [ ] analysis：一致性检查 / 爽点定位 / 节奏诊断

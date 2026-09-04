@@ -11,12 +11,9 @@
  * 接口一览：
  *   静态页：    GET  /                     → 前端页面（可选，返回内置 HTML 或提示）
  *   知识库：    GET  /api/projects         → 项目列表（两域 + 进度，读 project-meta）
- *               GET  /api/projects/:name   → 项目详情（meta + 章节表 + 事件 + 卷纲 概览）
+ *               GET  /api/projects/:name   → 项目详情（meta + pending）
  *               GET  /api/projects/:name/chapters/:n  → 单章三层（句子/分镜/章节标注）
  *               GET  /api/projects/:name/chapters/:n/source → 语料分章原文
- *               GET  /api/projects/:name/events       → 大事件 event.json
- *               GET  /api/projects/:name/volumes      → 卷纲 volume.json
- *               GET  /api/projects/:name/chapter-table→ 章节表
  *   检索：      POST /api/search           → 三通道检索（retrieve()）
  *   配置：      GET  /api/config           → 配置摘要（脱敏：不含 apiKey）
  *               PUT  /api/config           → 写 features 段/全局非敏感字段（模块作用域）
@@ -148,15 +145,12 @@ function apiProjects() {
   return { projects: out };
 }
 
-/** 项目详情（meta + 章节表 + 事件 + 卷纲 + pending） */
+/** 项目详情（meta + pending）——大事件/卷纲/章节表已于 2026-09-04 移除（报告期按需搜证，章节表无消费方） */
 function apiProjectDetail(name) {
   const root = projectRoot(name);
   const meta = readJsonSafe(path.join(root, "project-meta.json"));
-  const chapterTable = readJsonSafe(path.join(root, "章节", "章节表.json"));
-  const events = readJsonSafe(path.join(root, "大事件", "event.json"));
-  const volumes = readJsonSafe(path.join(root, "卷纲", "volume.json"));
   const pending = readJsonSafe(path.join(root, "pending.json"));
-  return { project: name, domain: domainOf(name), meta, chapterTable, events, volumes, pending: pending?.pending ?? [] };
+  return { project: name, domain: domainOf(name), meta, pending: pending?.pending ?? [] };
 }
 
 /** 单章三层（句子/分镜/章节标注）+ 语料分章 */
@@ -711,9 +705,6 @@ const ROUTES = [
   { m: "PUT", p: /^\/api\/books\/([^/]+)\/chapters\/(\d+)$/, h: (m, b) => apiSaveChapter(decodeURIComponent(m[1]), Number(m[2]), b) },
   { m: "GET", p: /^\/api\/projects\/([^/]+)$/, h: (m) => apiProjectDetail(decodeURIComponent(m[1])) },
   { m: "GET", p: /^\/api\/projects\/([^/]+)\/chapters\/(\d+)$/, h: (m) => apiChapter(decodeURIComponent(m[1]), Number(m[2])) },
-  { m: "GET", p: /^\/api\/projects\/([^/]+)\/events$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "大事件", "event.json")) ?? { events: [] } },
-  { m: "GET", p: /^\/api\/projects\/([^/]+)\/volumes$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "卷纲", "volume.json")) ?? { volumes: [] } },
-  { m: "GET", p: /^\/api\/projects\/([^/]+)\/chapter-table$/, h: (m) => readJsonSafe(path.join(projectRoot(decodeURIComponent(m[1])), "章节", "章节表.json")) ?? { chapters: [] } },
   // 拆书地图：读 store 已有 JSON → 生成自包含 HTML（纯程序投影 + LLM 梗概缓存）
   { m: "GET", p: /^\/api\/report\/([^/]+)$/, h: async (m) => {
       const { html } = await buildReport(decodeURIComponent(m[1]));

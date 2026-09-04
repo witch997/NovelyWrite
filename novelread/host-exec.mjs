@@ -23,7 +23,7 @@ import { buildVectors } from "../retriever/build-derived.mjs";
 import { checkJsonText } from "./verify-json.mjs";
 import { execFileSync } from "node:child_process";
 import { deriveChapter } from "./derive-chapter.mjs";
-import { STRUCTS, SHOT_TYPES, SHOT_FUNCS, CHAPTER_FUNCS, MAINLINE_STATES } from "./enums.mjs";
+import { STRUCTS, SHOT_TYPES, SHOT_FUNCS, CHAPTER_FUNCS } from "./enums.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
 import { DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir, cliArgs, runScriptArgs, mybookDir } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
@@ -256,13 +256,11 @@ function gateShots(shotJson, sentJson) {
   return { ok: issues.length === 0, issues };
 }
 
-/** 硬闸门 B2：章节层校验（function/summary/state） */
+/** 硬闸门 B2：章节层校验（function/summary）——2026-09-04 mainlineProgress.state 校验已移除 */
 function gateChapter(chJson) {
   const issues = [];
   if (!chJson?.function || !CHAPTER_FUNCS.includes(chJson.function)) issues.push(`function 非法「${chJson?.function}」`);
   if (!chJson?.summary || !chJson.summary.trim()) issues.push("summary 为空");
-  const badState = (chJson?.mainlineProgress ?? []).filter((m) => !MAINLINE_STATES.includes(m.state));
-  if (badState.length) issues.push("mainlineProgress.state 枚举非法");
   return { ok: issues.length === 0, issues };
 }
 
@@ -490,7 +488,7 @@ export async function main(argv = cliArgs()) {
       "",
       "请按《语料分析-SKILL》【往返2：分镜层+章节层】执行：",
       "① 分镜层：以句子序列为输入，按切镜判据划分分镜 → type/funcs/label 标注（sentenceIds 引用句子）",
-      "② 章节层：function（七种）/ summary / mainlineProgress",
+      "② 章节层：function（七种）/ summary（2026-09-04 起不再生成 mainlineProgress）",
       "注意：派生字段（sentenceRange/stats/suspense）由宿主脚本生成，不得输出。",
       "JSON 转义要求：所有字符串值内的换行必须转义为 \\\\n（不得出现未转义的真实换行符）。",
       "输出格式：一个 JSON 对象，键 = project 内相对路径（用 \"/\"），值 = 该文件完整内容。只输出这个 JSON。",
@@ -498,7 +496,7 @@ export async function main(argv = cliArgs()) {
     const r2 = await callLlm(userB, ch, skillB);
     if (!r2) return { ok: false, issue: "往返2 解析失败" };
     const shotKey = Object.keys(r2.payload).find((k) => k.includes("分镜标注") && k.endsWith(".json"));
-    const chKey = Object.keys(r2.payload).find((k) => k.startsWith("章节/") && k.endsWith(".json") && !k.endsWith("章节表.json"));
+    const chKey = Object.keys(r2.payload).find((k) => k.startsWith("章节/") && k.endsWith(".json"));
     if (!shotKey || !chKey) {
       console.error(`[往返2✗] 缺分镜/章节 JSON，实际键: ${Object.keys(r2.payload).join(", ")}`);
       return { ok: false, issue: "往返2 缺分镜/章节" };
@@ -731,20 +729,18 @@ export async function main(argv = cliArgs()) {
     console.log(`[host] 向量构建跳过：${vresult?.reason ?? "未知原因"}（${vresult?.guidance ?? ""}）`);
   }
 
-  /* ===== 批末自动补跑增量聚合（大事件/卷纲/章节表/头文档/词典） =====
-   * 语义：成功章 > 0 才跑（全失败 → aggregates 无输入会 exit(1)，需跳过）；
-   * 聚合增量模式：无新增章时零 LLM 开销；失败章不占 aggregatedChapters 名额，补跑成功后下次自然聚合；
-   * 聚合失败仅 warning（不拖垮 annotate）——聚合有 incremental-state.json 幂等重入，下次自动/手动聚合可续跑。 */
+  /* ===== 批末自动补跑聚合（确定性重算 + 终检 + 索引） =====
+   * 语义：本批有成功/改动/删除章才跑（全失败 → 聚合无变化，跳过）；
+   * 聚合为纯确定性全量重算（无 LLM，2026-09-04 起不再生成章节表.json）：
+   *   改动/删除章旧标注已在上面快照删除，重算只依据现存标注与清单，
+   *   自然剔除已删章，无需传章号；
+   * 聚合失败仅 warning（不拖垮 annotate）——重跑聚合即可恢复。 */
   if (okCount > 0 || changedSet.size || deletedSet.size) {
-    console.log(`\n[host] 批末自动补跑增量聚合（本批成功 ${okCount} 章${changedSet.size ? `，改动 ${[...changedSet].join(",")}` : ""}${deletedSet.size ? `，删除 ${[...deletedSet].join(",")}` : ""}）...`);
+    console.log(`\n[host] 批末自动补跑聚合（本批成功 ${okCount} 章${changedSet.size ? `，改动 ${[...changedSet].join(",")}` : ""}${deletedSet.size ? `，删除 ${[...deletedSet].join(",")}` : ""}）...`);
     try {
-      // 改动章（changed）传给聚合：aggregates 机械剔除章号后走增量
-      const aggArgsBase = [corpusName];
-      if (changedSet.size) aggArgsBase.push(`--changed=${[...changedSet].join(",")}`);
-      if (deletedSet.size) aggArgsBase.push(`--deleted=${[...deletedSet].join(",")}`);
-      const [aggCmd, aggArgs, aggEnv] = runScriptArgs("novelread/aggregates.mjs", aggArgsBase);
-      const aggOut = execFileSync(aggCmd, aggArgs, { encoding: "utf-8", env: aggEnv, timeout: 600000, maxBuffer: 32 * 1024 * 1024 }); // 10 分钟（聚合 3 次 LLM 调用）
-      console.log(aggOut.trim().slice(-1500)); // 只回显尾部关键信息（新增章/完成/索引），全文进任务日志
+      const [aggCmd, aggArgs, aggEnv] = runScriptArgs("novelread/aggregates.mjs", [corpusName]);
+      const aggOut = execFileSync(aggCmd, aggArgs, { encoding: "utf-8", env: aggEnv, timeout: 600000, maxBuffer: 32 * 1024 * 1024 }); // 确定性聚合（无 LLM），10 分钟为兜底上限
+      console.log(aggOut.trim().slice(-1500)); // 只回显尾部关键信息（完成/终检/索引），全文进任务日志
     } catch (e) {
       console.log((e.stdout ?? "").toString().slice(-600) || `[聚合✗] ${e.message}`);
       console.log("  [聚合] 本次聚合未完成（不阻塞）。可用补建指令后的下次任务自动续跑，或手动: node cli.mjs aggregate <书>");

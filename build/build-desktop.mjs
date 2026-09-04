@@ -22,6 +22,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+
+// 防误 import：仅直接运行（node build/build-desktop.mjs）时执行打包；被 import 时静默跳过（无副作用）
+if (!(process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url))) process.exit(0);
+
 const TRIBLE = process.env.TAURI_TARGET_TRIPLE || "x86_64-pc-windows-gnu";
 const CARGO_BIN = path.join(os.homedir(), ".cargo", "bin");
 // mingw bin（gnu 工具链链接器；运行时 DLL 不需要——壳实测静态链接 libgcc/libwinpthread）
