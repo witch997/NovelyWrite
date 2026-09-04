@@ -1,8 +1,8 @@
 /**
  * embed.mjs — embedding 客户端（公共模块，配置注入式）——供 retriever / siliconflowserver 复用
  *
- * 与 shared/llm.mjs 对称：本模块只封装 embedding API 调用（文本 → 向量），
- * 不实现任何向量库功能（构建/索引/检索是消费方的事）。
+ * 只封装 embedding API 调用（文本 → 向量），不实现任何向量库功能
+ * （构建/索引/检索是消费方的事）。
  *
  * 用法：
  *   import { createEmbed } from "../../shared/embed.mjs";

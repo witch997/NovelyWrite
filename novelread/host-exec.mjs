@@ -31,7 +31,7 @@ import { chapterHash, readFingerprints, writeFingerprints } from "../task/finger
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-/* ========== 自带 LLM 调用（不依赖 shared/llm.mjs 的 chatStream） ==========
+/* ========== 自带 LLM 调用 ==========
  * 原因：deepseek-v4-flash 为 reasoning 模型，长任务下思考会吃光 max_tokens
  * （finish_reason=length，reasoning_tokens=65534，content 为空）。
  * 需要传 thinking:{type:"disabled"} 禁用思考，直接输出正文。
