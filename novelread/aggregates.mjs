@@ -31,7 +31,7 @@ import { checkJsonText } from "./verify-json.mjs";
 import { buildLexicalIndex, buildVectors } from "../retriever/build-derived.mjs";
 import { ensureDerived } from "../retriever/ensure-derived.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
-import { CODE_ROOT, DATA_ROOT, configPath, corpusDir, storeDir, projectRoot, cliArgs, runScriptArgs } from "../shared/paths.mjs";
+import { DATA_ROOT, configPath, corpusDir, storeDir, projectRoot, cliArgs, runScriptArgs, outputDir } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,7 +57,7 @@ function parseArgs() {
   projectDir = projectRoot(project); // 域感知：两域自动探测
   corpusList = path.join(corpusDir, `${project}-章节清单.csv`);
   listPath = fs.existsSync(corpusList) ? corpusList : path.join(corpusDir, "章节清单.csv");
-  stateDir = path.join(CODE_ROOT, "novelread", "state"); // LLM 输出留档目录（格式漂移诊断）
+  stateDir = path.join(outputDir, "raw"); // LLM 输出留档目录（格式漂移诊断；数据根——代码根只读场景不可写）
   chatCfg = loadChatConfig(); // 惰性读配置（parseArgs 后）
   baseUrl = (chatCfg.baseUrl ?? "https://api.deepseek.com/v1").replace(/\/+$/, "");
 }
@@ -272,7 +272,7 @@ async function semanticEvent(summaries, summariesText, opts = {}) {
     "- **只输出 lifecycle[]，不输出 mainline[]、不输出 chapterIndex**（这两者已废弃）",
     "- 只输出一个文件：键 = `大事件/event.json`，值 = 完整 JSON 内容。只输出这个 JSON 对象。",
   ].join("\n");
-  const raw = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: null });
+  const raw = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: Math.max(chatCfg.timeoutMs ?? 300000, 900000) }); // 超时下限 15min（原 null 永久挂起），config 更大则跟随
   console.log(`[聚合] 调用①返回 ${raw.length} 字符`);
   const payload = parsePayload(raw);
   const key = Object.keys(payload).find((k) => k.includes("event.json") && !k.includes("event/"));
@@ -342,7 +342,7 @@ async function semanticVolume(summaries, summariesText, opts = {}) {
     "- **只输出 goal/targets/diagnostics，不输出 eventStructure[]、不输出 mainline**（已废弃）",
     "- 只输出一个文件：键 = `卷纲/volume.json`，值 = 完整 JSON 内容。只输出这个 JSON 对象。",
   ].join("\n");
-  const raw = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: null });
+  const raw = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: Math.max(chatCfg.timeoutMs ?? 300000, 900000) }); // 超时下限 15min（原 null 永久挂起），config 更大则跟随
   console.log(`[聚合] 调用②返回 ${raw.length} 字符`);
   const payload = parsePayload(raw);
   const key = Object.keys(payload).find((k) => k.includes("卷纲") && k.endsWith(".json"));
@@ -538,7 +538,7 @@ async function mergeJudgement(kind, oldObj, tempObj, newChapters) {
     `  - insert 的条目须含全部必填字段（${isEvent ? "entity/开始章/持续章/结束章/state/note" : "target/state/evidenceChapters/note"}）`,
     "- 只输出一个 JSON 数组（指令列表），不要任何其他内容。",
   ].join("\n");
-  const raw = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: null });
+  const raw = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: Math.max(chatCfg.timeoutMs ?? 300000, 900000) }); // 超时下限 15min（原 null 永久挂起），config 更大则跟随
   console.log(`[增量] 合并判定 ${kind} 返回 ${raw.length} 字符`);
   let instructions = [];
   try {

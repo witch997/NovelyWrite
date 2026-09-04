@@ -75,6 +75,25 @@
 
 ## 已修复问题（历史，勿重复改）
 
+- 2026-09-04 kill 竞态：kill running 任务后其状态立刻变 killed（子进程可能仍在同步
+  execFileSync 写盘），但旧逻辑 pumpQueue 只查 running → 同域新任务被提前放行，
+  与未退出的旧进程并发写同一本书。修复：pumpQueue 引入 queueBusy 占槽判断——
+  killed 且仍在 taskState（未 close/未手动收尾）的任务继续占槽，由 close 回调或
+  5s SIGKILL 兜底出队后再唤醒下一个（改动未提交，task/manager.mjs）
+- 2026-09-04 服务器进程+子进程写入器缓存不一致（无过期、永久陈腐风险）：
+  sentMap/entity 词典带 mtime+size 签名缓存，加载时 statSync 对比签名失效
+  （retriever/rag-core.mjs fileSig + retriever/lexical.mjs；改动未提交）
+- 2026-09-04 诊断转储写入代码根 CODE_ROOT（只读/不可写部署会失败）：raw 转储
+  改写到数据根 outputDir/raw/（novelread/host-exec.mjs 3 处 + aggregates.mjs stateDir；
+  改动未提交）
+- 2026-09-04 LLM fetch 无超时（API 挂起=任务永久 running/看板转圈）：
+  host-exec（宿主级任务取 max(timeoutMs,15min)）、aggregates、preprocess/writedraft、
+  report/ask+report/report 全部补 AbortController + 可操作报错；shared/llm.mjs
+  为不可达死代码未动（改动未提交）
+- 2026-09-04 config.json 直接 writeFileSync 覆写（写一半被 kill=半截 JSON 单点损坏）：
+  新增 shared/fs.mjs 原子写（tmp+rename，Windows/NTFS rename 覆盖原子性），
+  server.mjs apiConfigPut/apiSaveKeys 两处 config 写入改走 atomicWriteJson
+  （改动未提交，shared/fs.mjs 为新增文件）
 - 2026-08-23 任务有失败章仍 exit 0 → 显示假成功：host-exec 收尾按 `failedCh`
   设退出码 1（commit bf2c08a）
 - 2026-08-23 任务卡片状态文字被历史错误行霸屏：`lastLogLine` 只扫尾部 8 行

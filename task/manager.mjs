@@ -85,11 +85,30 @@ export function startTask(kind, body) {
   return { taskId: id, queued: t.status === "queued", position: queue.length };
 }
 
-/** 唤醒队列：域内无 running 且队头等待 → spawn */
+/**
+ * 队列是否被占用执行槽（kill 竞态修复，2026-09-04）：
+ *   running = 正在执行 → 占槽；
+ *   killed 且仍在 taskState = 子进程尚未 close / 未走 5s SIGKILL 手动收尾
+ *     （可能仍在同步 execFileSync 中写盘）→ 继续占槽，防止「杀掉任务后立刻
+ *     启动同域新任务」导致新旧两进程并发写同一本书（P0-1 只保证 kill 有效，
+ *     未保证 kill 后队列语义——killed 任务必须真正退出后才放行下一个）。
+ *   占槽任务由 close 回调（spawnTask 内）或 5s SIGKILL 兜底（killTask 内）
+ *   出队并唤醒队列；taskState 里不存在 = 已收尾 = 不占槽。
+ *   queued 不算占槽（队头 queued 需要被本函数唤醒）。
+ */
+function queueBusy(queue) {
+  return queue.some((id) => {
+    const r = taskState.get(id);
+    if (!r) return false; // 已收尾出队（close / 手动收尾）
+    return r.t.status === "running" || r.t.status === "killed";
+  });
+}
+
+/** 唤醒队列：域内无任务占用执行槽且队头等待 → spawn */
 function pumpQueue(queueName) {
   const queue = queues[queueName];
   if (!queue?.length) return;
-  if (queue.some((id) => taskState.get(id)?.t.status === "running")) return;
+  if (queueBusy(queue)) return;
   const nextId = queue.find((id) => taskState.get(id)?.t.status === "queued");
   if (!nextId) return;
   const rec = taskState.get(nextId);

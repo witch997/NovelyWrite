@@ -26,17 +26,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { dictDirOf, projectRoot, shotJsonPath, shotToText, padChapter } from "./rag-core.mjs";
+import { dictDirOf, projectRoot, shotJsonPath, shotToText, padChapter, fileSig } from "./rag-core.mjs";
 import { listProjects as listAllProjects } from "../shared/paths.mjs";
 
-/* ---------- 每书实体词典（<书>project/derived/dict/entity-dict.json，按书缓存） ---------- */
-const _dictCache = new Map(); // project → { entities, byFirstChar, derivedFrom }
+/* ---------- 每书实体词典（<书>project/derived/dict/entity-dict.json，按书缓存；mtime 感知） ---------- */
+const _dictCache = new Map(); // project → { sig, dict }（sig = 词典文件签名；聚合重建后自动失效重载）
 
 export function loadEntityDict(project) {
-  if (_dictCache.has(project)) return _dictCache.get(project);
   const file = path.join(dictDirOf(project), "entity-dict.json");
+  const sig = fileSig(file);
+  const cached = _dictCache.get(project);
+  if (cached && sig && cached.sig === sig) return cached.dict;
   let dict = { entities: [], byFirstChar: new Map(), derivedFrom: null };
-  if (fs.existsSync(file)) {
+  if (sig) {
     try {
       const data = JSON.parse(fs.readFileSync(file, "utf-8"));
       const entities = (data.entities ?? []).map((e) => (typeof e === "string" ? e : e.text)).filter(Boolean);
@@ -51,9 +53,9 @@ export function loadEntityDict(project) {
         byFirstChar.get(ch).push(e);
       }
       dict = { entities, byFirstChar, derivedFrom: data.derivedFrom ?? null };
-    } catch { /* 词典损坏 → 空 */ }
+    } catch { /* 词典损坏 → 空（带当前签名缓存，重建后签名变 → 自动重载） */ }
   }
-  _dictCache.set(project, dict);
+  _dictCache.set(project, { sig, dict });
   return dict;
 }
 

@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import { deriveChapter } from "./derive-chapter.mjs";
 import { STRUCTS, SHOT_TYPES, SHOT_FUNCS, CHAPTER_FUNCS, MAINLINE_STATES } from "./enums.mjs";
 import { loadSkillSlice } from "../shared/skill-slice.mjs";
-import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir, cliArgs, runScriptArgs, mybookDir } from "../shared/paths.mjs";
+import { DATA_ROOT, storeDir, corpusDir, projectRoot, DOMAIN, createProject, outputDir, cliArgs, runScriptArgs, mybookDir } from "../shared/paths.mjs";
 import { loadChatConfig } from "../shared/config.mjs";
 import { chapterHash, readFingerprints, writeFingerprints } from "../task/fingerprint.mjs";
 
@@ -134,6 +134,21 @@ async function chatStreamNoThinking(messages, opts = {}) {
 // ---------- 解析参数（移入 main，支持 SEA 分发注入 argv） ----------
 function readLines(p) {
   return fs.readFileSync(p, "utf-8").replace(/\r\n/g, "\n").split("\n");
+}
+
+/** LLM 原始输出留档路径（数据根 output/raw/——代码根只读场景不可写，诊断文件必须随数据走）
+ * 原实现写 CODE_ROOT/novelread/state 且无保护：目录不可写时 writeFileSync 抛错会冒泡
+ * 崩掉整个 annotate 任务（而非记 pending 跳章）。统一挪数据根 + 调用方包 try。 */
+function rawDumpFile(corpusName, chNum, suffix = "") {
+  return path.join(outputDir, "raw", `raw-${corpusName}-ch${String(chNum).padStart(3, "0")}${suffix}.txt`);
+}
+
+/** 写留档（自动建目录，失败不抛）——留档是诊断辅助，任何失败都不应阻塞主流程 */
+function writeRawDump(file, content) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, content, "utf-8");
+  } catch { /* 留档失败静默（数据根也不可写时跳过） */ }
 }
 
 /** 遍历 project 目录，返回相对路径列表 */
@@ -352,9 +367,12 @@ export async function main(argv = cliArgs()) {
 
   /** 调 LLM 并解析（失败存 raw，返回 null）；skill 按层传入（往返1/往返2 各取切片） */
   async function callLlm(userMsg, ch, skill) {
-    console.log("[host] 调用 LLM（streaming + thinking 禁用，max_tokens=65536 / 无超时）...");
+    console.log("[host] 调用 LLM（streaming + thinking 禁用，max_tokens=65536）...");
     const t0 = Date.now();
-    const res = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: null });
+    // 超时（2026-09-04 修复，原为 timeoutMs:null 永久挂起）：标注单次往返下限 15 分钟
+    // （reasoning 模型长思考/慢速时段/超长章兜底）；config.timeoutMs 更大则跟随用户配置
+    const llmTimeoutMs = Math.max(chatCfg.timeoutMs ?? 300000, 900000);
+    const res = await chatStreamNoThinking([{ role: "system", content: skill }, { role: "user", content: userMsg }], { maxTokens: 65536, timeoutMs: llmTimeoutMs });
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     console.log(`[host] LLM 返回 ${res.content.length} 字符（耗时 ${secs}s）`);
     // 消耗统计累计（token 来自流式末 chunk usage；未带 usage 时该项为 0）
@@ -369,7 +387,7 @@ export async function main(argv = cliArgs()) {
       return { payload: parsePayload(res.content), raw: res.content };
     } catch (err) {
       console.error("[host] 解析失败，原始输出已存盘供检查:", err.message);
-      fs.writeFileSync(path.join(CODE_ROOT, "novelread", "state", `raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}.txt`), res.content, "utf-8");
+      writeRawDump(rawDumpFile(corpusName, ch.number), res.content);
       return null;
     }
   }
@@ -497,10 +515,9 @@ export async function main(argv = cliArgs()) {
     if (gB.length) {
       console.error(`[硬闸门B✗] ${gB.join("; ")} → 本章跳过（句子已落盘）`);
       // 留档原始输出供排查（funcs/结构为何不过闸）
-      try {
-        fs.writeFileSync(path.join(CODE_ROOT, "novelread", "state", `raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}-round2.txt`), r2.raw, "utf-8");
-        console.log(`  [留档] raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}-round2.txt`);
-      } catch { /* 留档失败不阻塞 */ }
+      const r2Dump = rawDumpFile(corpusName, ch.number, "-round2");
+      writeRawDump(r2Dump, r2.raw);
+      if (fs.existsSync(r2Dump)) console.log(`  [留档] ${path.basename(r2Dump)}`);
       return { ok: false, issue: `往返2 校验失败: ${gB.join("; ")}` };
     }
     // 文件名规范化：宿主决定标准路径（第XXXX章.json 4位零填充），不信任 LLM 输出的键
@@ -528,8 +545,8 @@ export async function main(argv = cliArgs()) {
       chapterIssues.push(`第${ch.number}章`);
     }
     existing.splice(0, existing.length, ...walkProject(PROJECT_DIR));
-    // 成功落盘 → 删除本轮的 raw 解析失败留档（成功即留档使命结束，防 state/ 堆积）
-    const rawP = path.join(CODE_ROOT, "novelread", "state", `raw-${corpusName}-ch${String(ch.number).padStart(3, "0")}.txt`);
+    // 成功落盘 → 删除本轮的 raw 解析失败留档（成功即留档使命结束，防 output/raw 堆积）
+    const rawP = rawDumpFile(corpusName, ch.number);
     if (fs.existsSync(rawP)) { fs.unlinkSync(rawP); console.log(`  [清理] 删除过期留档 ${path.basename(rawP)}`); }
     console.log(`[host] 第${ch.number}章完成`);
     return { ok: true, issue: null };

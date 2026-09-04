@@ -115,31 +115,44 @@ async function chat(messages, maxTokens = null, thinking = false, decode = null,
   if (maxTokens !== null) body.max_tokens = maxTokens;
   // thinking：默认禁用（不传 disabled）；只有显式 thinking=true 才开启
   if (thinking !== true) body.thinking = { type: "disabled" };
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${chatCfg.apiKey}` },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "", out = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t.startsWith("data:")) continue;
-      const d = t.slice(5).trim();
-      if (d === "[DONE]") continue;
-      try { out += JSON.parse(d).choices?.[0]?.delta?.content ?? ""; } catch { /* skip */ }
+  // 超时（2026-09-04 修复，原无 AbortController——API 挂起=任务永久 running）
+  // 逐镜/整合单次调用输出量小，config.timeoutMs（默认 5min）足够
+  const timeoutMs = chatCfg.timeoutMs ?? 300000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${chatCfg.apiKey}` },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "", out = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t.startsWith("data:")) continue;
+        const d = t.slice(5).trim();
+        if (d === "[DONE]") continue;
+        try { out += JSON.parse(d).choices?.[0]?.delta?.content ?? ""; } catch { /* skip */ }
+      }
     }
+    if (!out.trim()) throw new Error("LLM 流式返回空内容");
+    return out;
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error(`LLM 请求超时（${timeoutMs}ms），请检查网络或调大 config.json 的 chat.timeoutMs`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
   }
-  if (!out.trim()) throw new Error("LLM 流式返回空内容");
-  return out;
 }
 
 /* ========== 温度模块（采样层，逐镜独立；与风格模块解耦） ==========

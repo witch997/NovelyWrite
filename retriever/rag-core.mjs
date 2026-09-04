@@ -72,21 +72,39 @@ export function cosine(a, b) {
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1e-9);
 }
 
-/* ---------- 句子 map 缓存（回源用） ---------- */
-const _sentMapCache = new Map(); // key: project:chapter → Map(sid → text)
+/* ---------- 句子 map 缓存（回源用；mtime 感知——子进程标注更新后自动失效重载） ----------
+ * 缓存条目: key: project:chapter → { sig, map }
+ * 失效：每次 load 对该章句子文件 statSync（μs 级），签名变化（重标/修复/文件删除/恢复）→ 重建。
+ *   签名 = mtimeMs + size 双值（同毫秒内重写同文件内容不同但 mtime 可能相同 → size 兜底）。
+ *   stat 失败（文件不存在/不可访问）→ 空 map（不残留旧数据）。
+ * 附带收益：修复"半写/损坏空 map 被永久缓存"的隐藏 bug——损坏瞬间缓存带旧签名，
+ *   源文件写入完成后签名变化 → 下次 load 自动重建（原逻辑一旦缓存空 map 永不更新）。 */
+const _sentMapCache = new Map(); // key → { sig, map }
+
+/** 文件签名（mtimeMs+size 双值字符串）；stat 失败返回 null（不存在/不可访问） */
+export function fileSig(p) {
+  try {
+    const st = fs.statSync(p);
+    return `${st.mtimeMs}_${st.size}`;
+  } catch {
+    return null;
+  }
+}
 
 export function loadSentenceMap(project, chapter) {
   const key = `${project}:${chapter}`;
-  if (_sentMapCache.has(key)) return _sentMapCache.get(key);
   const file = sentenceJsonPath(project, chapter);
+  const sig = fileSig(file);
+  const cached = _sentMapCache.get(key);
+  if (cached && sig && cached.sig === sig) return cached.map;
   let map = new Map();
-  if (fs.existsSync(file)) {
+  if (sig) {
     try {
       const data = JSON.parse(fs.readFileSync(file, "utf-8"));
       map = new Map((data.sentences ?? []).map((s) => [s.id, s.text]));
-    } catch { /* 源文件损坏时返回空 map */ }
+    } catch { /* 源文件损坏 → 空 map（带当前签名缓存，源修好后签名变 → 自动重建） */ }
   }
-  _sentMapCache.set(key, map);
+  _sentMapCache.set(key, { sig, map });
   return map;
 }
 

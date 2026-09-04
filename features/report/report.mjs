@@ -51,44 +51,58 @@ async function buildSynopsis(project, nodes) {
   const sys = `你是小说编辑。为《${project}》生成全书梗概。
 先联网搜索这部作品的题材与简介（忽略学术会议、研究动态类信息），再结合前 ${picked.length} 章剧情摘要综合概括。
 要求：500 字左右；纯文字输出（不要标题/列表/加粗）；不介绍作者生平；概括主线、核心人物、故事走向，基本准确即可。`;
-  const res = await fetch(`${baseUrl}/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": cfg.apiKey,
-      "Authorization": `Bearer ${cfg.apiKey}`,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: cfg.model,
-      max_tokens: 4096,
-      temperature: 0.8, // 较高温度 → 凝练综述而非机械罗列
-      messages: [{
-        role: "user",
-        content: [{ type: "text", text: `搜索《${project}》的题材简介，结合前 ${picked.length} 章剧情摘要生成全书梗概。输出约 500 字（400-650 字），纯文字，不介绍作者生平。\n\n${inputText}` }],
-      }],
-      tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 1 }],
-    }),
-  });
-  if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const data = await res.json();
-  // Messages 响应：text block 即梗概（搜索结果为 web_search_tool_result block，不计入）
-  const raw = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
-  if (!raw) throw new Error("LLM 返回空梗概");
-  // 轻清理（仅去 markdown 标记让显示干净，不截断——字数由 prompt 控制，直出 LLM 原文）
-  const text = raw
-    .replace(/^#{1,6}\s*.*$/gm, "")        // 去标题行
-    .replace(/^\s*(?:[-*|>\d.]+)\s+/gm, "") // 去列表/表格标记
-    .replace(/^>\s*/gm, "")                 // 去引用
-    .replace(/\*\*/g, "")                   // 去粗体标记
-    .replace(/\n{2,}/g, "\n")
-    .replace(/\n/g, "")                     // 合并为连续文本
-    .replace(/[ \t]+/g, " ")
-    .trim();
-  if (!text) throw new Error("LLM 返回空梗概（清理后为空）");
-  fs.mkdirSync(path.dirname(synopsisCacheFile(project)), { recursive: true });
-  fs.writeFileSync(synopsisCacheFile(project), JSON.stringify({ fingerprint: fp, text, builtAt: new Date().toISOString() }, null, 2) + "\n", "utf-8");
-  return { text, from: "llm" };
+
+  // 超时（2026-09-04 修复，原无 AbortController——API 挂起=看板梗概永久转圈）
+  // 联网搜索可能偏慢，但 config.timeoutMs（默认 5min）仍应足够；超时抛可操作错误
+  const timeoutMs = cfg.timeoutMs ?? 300000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${baseUrl}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": cfg.apiKey,
+        "Authorization": `Bearer ${cfg.apiKey}`,
+        "anthropic-version": "2023-06-01",
+      },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: cfg.model,
+        max_tokens: 4096,
+        temperature: 0.8, // 较高温度 → 凝练综述而非机械罗列
+        messages: [{
+          role: "user",
+          content: [{ type: "text", text: `搜索《${project}》的题材简介，结合前 ${picked.length} 章剧情摘要生成全书梗概。输出约 500 字（400-650 字），纯文字，不介绍作者生平。\n\n${inputText}` }],
+        }],
+        tools: [{ type: "web_search_20250305", name: "web_search", max_uses: 1 }],
+      }),
+    });
+    if (!res.ok) throw new Error(`LLM HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    const data = await res.json();
+    // Messages 响应：text block 即梗概（搜索结果为 web_search_tool_result block，不计入）
+    const raw = (data.content ?? []).filter((b) => b.type === "text").map((b) => b.text ?? "").join("").trim();
+    if (!raw) throw new Error("LLM 返回空梗概");
+    // 轻清理（仅去 markdown 标记让显示干净，不截断——字数由 prompt 控制，直出 LLM 原文）
+    const text = raw
+      .replace(/^#{1,6}\s*.*$/gm, "")        // 去标题行
+      .replace(/^\s*(?:[-*|>\d.]+)\s+/gm, "") // 去列表/表格标记
+      .replace(/^>\s*/gm, "")                 // 去引用
+      .replace(/\*\*/g, "")                   // 去粗体标记
+      .replace(/\n{2,}/g, "\n")
+      .replace(/\n/g, "")                     // 合并为连续文本
+      .replace(/[ \t]+/g, " ")
+      .trim();
+    if (!text) throw new Error("LLM 返回空梗概（清理后为空）");
+    fs.mkdirSync(path.dirname(synopsisCacheFile(project)), { recursive: true });
+    fs.writeFileSync(synopsisCacheFile(project), JSON.stringify({ fingerprint: fp, text, builtAt: new Date().toISOString() }, null, 2) + "\n", "utf-8");
+    return { text, from: "llm" };
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error(`LLM 请求超时（${timeoutMs}ms），请检查网络或调大 config.json 的 chat.timeoutMs`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

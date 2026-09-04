@@ -65,24 +65,37 @@ async function refineWithLLM(project, candidates, question) {
     .map((c) => `第${c.num}章 ${c.title}（${c.function}）：${String(c.summary ?? "").slice(0, 80)}`)
     .join("\n");
 
-  const res = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cfg.apiKey}` },
-    body: JSON.stringify({
-      model: cfg.model, stream: false, temperature: 0.2,
-      messages: [
-        { role: "system", content: sys },
-        { role: "user", content: `问题：${question}\n候选章节：\n${candText}` },
-      ],
-    }),
-  });
-  if (!res.ok) throw new Error(`LLM HTTP ${res.status}`);
-  const data = await res.json();
-  const text = (data.choices?.[0]?.message?.content ?? "").trim();
-  // 解析 JSON（容忍代码块包裹）
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error("LLM 未返回 JSON");
-  return JSON.parse(m[0]);
+  // 超时（2026-09-04 修复，原无 AbortController——API 挂起=看板问答永久转圈）
+  // 精筛单次调用输出量小，config.timeoutMs（默认 5min）足够
+  const timeoutMs = cfg.timeoutMs ?? 300000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cfg.apiKey}` },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model: cfg.model, stream: false, temperature: 0.2,
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: `问题：${question}\n候选章节：\n${candText}` },
+        ],
+      }),
+    });
+    if (!res.ok) throw new Error(`LLM HTTP ${res.status}`);
+    const data = await res.json();
+    const text = (data.choices?.[0]?.message?.content ?? "").trim();
+    // 解析 JSON（容忍代码块包裹）
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error("LLM 未返回 JSON");
+    return JSON.parse(m[0]);
+  } catch (err) {
+    if (err.name === "AbortError") throw new Error(`LLM 请求超时（${timeoutMs}ms），请检查网络或调大 config.json 的 chat.timeoutMs`);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**

@@ -51,6 +51,7 @@ import { spawn, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { CODE_ROOT, DATA_ROOT, storeDir, corpusDir, mybookDir, outputDir, projectRoot, listProjects, domainOf, DOMAIN, configPath, ensureDataDirs, createProject, isSeaRuntime, writingSessionDir, runScriptArgs, exprojectDir } from "./shared/paths.mjs";
 import { loadChatConfig, loadConfigSummary, loadRawConfig } from "./shared/config.mjs";
+import { atomicWriteJson } from "./shared/fs.mjs";
 import { retrieve } from "./retriever/retriever.mjs";
 import { NovelyError, report } from "./shared/errors.mjs";
 import { loadTaskLog } from "./shared/tasks.mjs";
@@ -215,7 +216,7 @@ function apiConfigPut(body) {
     }
   }
   try {
-    fs.writeFileSync(configPath, JSON.stringify(raw, null, 4), "utf-8");
+    atomicWriteJson(configPath, raw);
   } catch (err) {
     throw new NovelyError("CONFIG_INVALID", { context: { cause: err.message } });
   }
@@ -283,7 +284,7 @@ function apiSaveKeys(body) {
     raw.embed = { ...(raw.embed ?? {}), apiKey: body.embedApiKey.trim() };
   }
   try {
-    fs.writeFileSync(configPath, JSON.stringify(raw, null, 4), "utf-8");
+    atomicWriteJson(configPath, raw);
   } catch (err) {
     throw new NovelyError("CONFIG_INVALID", { context: { cause: err.message } });
   }
@@ -344,10 +345,14 @@ function scanChapters(dir) {
 }
 const chapterFile = (dir, num) => path.join(dir, `第${pad4(num)}章.md`);
 
-/** GET /api/books — 我的书列表（书名 + 章节数 + 总字数 + 最近更新） */
+/** GET /api/books — 我的书列表（书名 + 章节数 + 总字数 + 最近更新）
+ * 书名直接读 mybook/ 目录（有原稿即显示，不依赖 store/myproject 建库项目） */
 function apiBooks() {
+  const names = fs.existsSync(mybookDir)
+    ? fs.readdirSync(mybookDir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)
+    : [];
   return {
-    books: listProjects(DOMAIN.MY).map((name) => {
+    books: names.map((name) => {
       const chapters = scanChapters(bookDir(name));
       return {
         name,
